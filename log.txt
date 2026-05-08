@@ -1,0 +1,56 @@
+05:39:52:356 -> [BLE] BTstack up on 2C:CF:67:D6:AE:13
+05:39:52:356 -> [BLE] Start scanning...
+05:39:52:426 -> [ADV] Name (len=13): LE_WH-1000XM5
+05:39:52:506 -> [ADV] Name (len=8): TNT_BW  
+05:39:52:528 -> [ADV] Name (len=13): LE_WH-1000XM5
+05:39:52:735 -> [ADV] Name (len=16): PicoW Controller
+05:39:52:764 -> [ADV] MATCH: 'PicoW Controller'
+05:39:52:764 -> [BLE] Connecting to 2C:CF:67:D6:B1:B1...
+05:39:55:255 -> [BLE] Connected! handle=0x0040 initial_interval=30.00ms
+05:39:55:257 -> [STATE] TC_W4_CONNECT -> TC_W4_CONNECTION_UPDATE_COMPLETE
+05:39:55:756 -> [BLE] Sending connection parameter update (interval=15ms)
+05:39:56:806 -> [BLE] Connection update: status=0x00 interval=8 (10.00ms)
+05:39:56:807 -> [STATE] TC_W4_CONNECTION_UPDATE_COMPLETE -> TC_W4_SERVICE_DISCOVERY_DELAY
+05:39:56:807 -> [GATT] Waiting 500ms before service discovery...
+05:39:57:308 -> [GATT] Starting primary service discovery (after delay)...
+05:39:57:309 -> [STATE] TC_W4_SERVICE_DISCOVERY_DELAY -> TC_W4_SERVICE_RESULT
+05:40:27:311 -> [GATT] Service query error: 0x7f
+05:40:27:312 -> [GATT] Retrying service discovery in 500ms...
+05:40:27:812 -> [GATT] Starting primary service discovery (after delay)...
+05:40:27:813 -> [STATE] TC_W4_SERVICE_DISCOVERY_DELAY -> TC_W4_SERVICE_RESULT
+05:40:52:296 -> [GATT] Service query error: 0x1f
+05:40:52:297 -> [GATT] Retrying service discovery in 500ms...
+05:40:52:297 -> [BLE] Disconnected from 2C:CF:67:D6:B1:B1
+05:40:52:297 -> [BLE] Start scanning...
+05:40:52:417 -> [ADV] Name (len=13): LE_WH-1000XM5
+
+---- マシンから切断されたため、シリアル ポート COM18 を閉じました ----
+---- シリアル ポート COM18 が再オープンされました ----
+
+05:41:15:793 -> Version: 7.95.61 (abcd531 CY) CRC: 4528a809 Date: Wed 2023-01-11 10:29:38 PST Ucode Ver: 1043.2169 FWID 01-7afb0879
+05:41:15:993 -> cyw43 loaded ok, mac 2c:cf:67:d6:ae:12
+05:41:15:998 -> BT FW download, version = CYW4343A2_001.003.016.0065.0000_Generic_SDIO_37MHz_wlbga_BU_RPI_dl_signed
+05:41:16:318 -> [BLE] BTstack up on 2C:CF:67:D6:AE:13
+05:41:16:318 -> [BLE] Start scanning...
+05:41:16:465 -> [ADV] Name (len=8): TNT_BW  
+05:41:21:721 -> [ADV] Name (len=16): PicoW Controller
+05:41:21:723 -> [ADV] MATCH: 'PicoW Controller'
+05:41:21:723 -> [BLE] Connecting to 2C:CF:67:D6:B1:B1...
+05:41:23:240 -> [BLE] Connected! handle=0x0040 initial_interval=30.00ms
+05:41:23:241 -> [STATE] TC_W4_CONNECT -> TC_W4_CONNECTION_UPDATE_COMPLETE
+05:41:23:741 -> [BLE] Connection Update is DISABLED (skipping)
+05:41:23:741 -> [GATT] Transitioning to service discovery delay...
+05:41:24:242 -> [GATT] Starting primary service discovery (after delay)...
+05:41:24:243 -> [STATE] TC_W4_SERVICE_DISCOVERY_DELAY -> TC_W4_SERVICE_RESULT
+05:41:24:413 -> [GATT] Service found: handle=0x0001-0x0003 uuid16=0x1800
+05:41:24:415 -> [GATT] Service found: handle=0x0004-0x0006 uuid16=0x1801
+05:41:24:474 -> [GATT] Service found: handle=0x0007-0x000a uuid16=0x0000
+05:41:24:475 -> [GATT] ✓ Found Controller service!
+05:41:24:475 -> [GATT] Service found: handle=0x000b-0x000e uuid16=0x0000
+05:41:24:533 -> [GATT] Discovering characteristics...
+05:41:24:653 -> [GATT] Characteristic: handle=0x0009 props=0x32 uuid16=0x0000
+05:41:24:654 -> [GATT] Using characteristic handle=0x0009 (notify capable)
+05:41:24:654 -> [GATT] Enabling notifications on handle=0x0009...
+05:41:24:836 -> [GATT] Notifications enable result: 0x00
+05:41:24:838 -> [BLE] ===== READY - Receiving controller data =====
+05:41:25:224 -> [RX] OK LX= 235 LY= 255 RX=  32 RY=  63 L2=136 R2=226 key=4d btn=1d RSSI=0dBm
