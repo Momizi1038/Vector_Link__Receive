@@ -1,44 +1,24 @@
 /**
- * Copyright (c) 2023 Raspberry Pi (Trading) Ltd.
+ * Bluetooth Classic SPP クライアント - Picow Controller受信側
  *
- * SPDX-License-Identifier: BSD-3-Clause
+ * BLE (GATTクライアント/Notify) から Bluetooth Classic (SPP/RFCOMM) への移行版
  *
- * [修正版 v2] BLE GATTクライアント - Picow Controller受信側
- *
- * 修正内容 (v2追加):
- *  7. Connection Update完了後、サービス探索開始まで200ms待機
- *     → ATT 0x7F (UNLIKELY_ERROR) の回避
- *     → 送信側heartbeatの1msタイマー圧迫による応答遅延を吸収
- *  8. Connection Updateを行わないオプションを追加
- *     → まずUpdate無しで接続・サービス探索を確認してから有効化する
+ * 変更点:
+ *  - BLEスキャン (gap_start_scan) → Classic Inquiry (gap_inquiry_start)
+ *  - GAP_EVENT_ADVERTISING_REPORT → GAP_EVENT_INQUIRY_RESULT でデバイス名比較
+ *  - GATTクライアント (gatt_client_discover_*) → rfcomm_create_channel で直接接続
+ *  - GATT Notify受信 → RFCOMM_DATA_PACKET で受信
+ *  - Connection Update / Service Discovery 遅延 タイマー → 削除
+ *  - ステートマシンを Classic 用に整理
  */
 
 #include <stdio.h>
+#include <string.h>
 #include "btstack.h"
 #include "pico/cyw43_arch.h"
 #include "pico/stdlib.h"
 
-#include "type.h"
-
-// -------------------------------------------------------
-// UUID定義
-// Peripheral側 ds4_data_gatt.h の定義に合わせること
-// -------------------------------------------------------
-
-// Picow Controller カスタムサービス UUID (128bit, Little Endian)
-// "6f8b2c10-9d3a-4b1f-8c7e-2a4d5e9f1a3b"
-static const uint8_t picow_service_uuid[16] = {
-    0x6f, 0x8b, 0x2c, 0x10, 0x9d, 0x3a, 0x4b, 0x1f,
-    0x8c, 0x7e, 0x2a, 0x4d, 0x5e, 0x9f, 0x1a, 0x3b
-};
-
-// ControllerData Characteristic UUID (128bit, Little Endian)
-// Peripheral側のGATTファイルと必ず一致させること
-// "6f8b2c10-9d3a-4b1f-8c7e-2a4d5e9f1a3b" ← Peripheral側と同じUUIDの場合はこちら
-static const uint8_t controller_data_uuid[16] = {
-    0x6f, 0x8b, 0x2c, 0x10, 0x9d, 0x3a, 0x4b, 0x1f,
-    0x8c, 0x7e, 0x2a, 0x4d, 0x5e, 0x9f, 0x1a, 0x3b
-};
+#include "type.h"   // ds4_data 構造体
 
 // -------------------------------------------------------
 // デバッグログ制御
@@ -50,36 +30,29 @@ static const uint8_t controller_data_uuid[16] = {
 #endif
 
 // -------------------------------------------------------
-// タイミング設定
+// 設定
 // -------------------------------------------------------
-#define LED_QUICK_FLASH_DELAY_MS    100
-#define LED_SLOW_FLASH_DELAY_MS    1000
+#define LED_FLASH_CONNECTED_MS   100
+#define LED_FLASH_IDLE_MS       1000
 
-// 接続後Connection Updateを送るまでの待機時間
-#define CONNECTION_UPDATE_DELAY_MS  500
+// Inquiry 時間（N × 1.28秒、最大48）
+#define INQUIRY_DURATION         5   // 約6.4秒
 
-// Connection Update完了後、サービス探索を始めるまでの待機時間
-// 送信側のランループ負荷が落ち着くまで待つ
-// [修正7] 0ms → 200ms に変更（ATT 0x7F対策）
-#define SERVICE_DISCOVERY_DELAY_MS  500
+// SPP チャンネル番号（サーバー側と一致させること）
+#define SPP_RFCOMM_CHANNEL       1
 
-// RSSIサンプリング間隔（N受信パケットに1回）
-#define RSSI_SAMPLE_INTERVAL         30
+// 接続対象デバイス名（サーバー側 gap_set_local_name と一致させること）
+#define TARGET_DEVICE_NAME      "PicoW Controller"
 
 // -------------------------------------------------------
-// ステートマシン定義
+// ステートマシン定義（Classic 用に簡素化）
 // -------------------------------------------------------
 typedef enum {
     TC_OFF,
     TC_IDLE,
-    TC_W4_SCAN_RESULT,
-    TC_W4_CONNECT,
-    TC_W4_CONNECTION_UPDATE_COMPLETE,
-    TC_W4_SERVICE_DISCOVERY_DELAY,   // [修正7] 探索前待機ステート追加
-    TC_W4_SERVICE_RESULT,
-    TC_W4_CHARACTERISTIC_RESULT,
-    TC_W4_ENABLE_NOTIFICATIONS_COMPLETE,
-    TC_W4_READY
+    TC_W4_INQUIRY_RESULT,    // Inquiry 実行中 → サーバーを探索
+    TC_W4_CONNECT,           // RFCOMM 接続待ち
+    TC_W4_READY              // 接続完了・データ受信中
 } gc_state_t;
 
 // -------------------------------------------------------
@@ -88,454 +61,281 @@ typedef enum {
 static btstack_packet_callback_registration_t hci_event_callback_registration;
 static gc_state_t state = TC_OFF;
 
-static bd_addr_t        server_addr;
-static bd_addr_type_t   server_addr_type;
-static hci_con_handle_t connection_handle;
+static bd_addr_t  server_addr;          // 見つけたサーバーの BD アドレス
+static bool       server_found = false;
 
-static gatt_client_service_t        server_service;
-static gatt_client_characteristic_t server_characteristic;
+static uint16_t   rfcomm_cid = 0;      // 0 = 未接続
 
-static bool listener_registered = false;
-static gatt_client_notification_t notification_listener;
+static int        rssi_server  = 0;
+static int        rssi_counter = 0;
+#define RSSI_SAMPLE_INTERVAL 30
 
 static btstack_timer_source_t heartbeat;
-static btstack_timer_source_t connection_update_timer;   // Connection Update遅延用
-static btstack_timer_source_t service_discovery_timer;  // [修正7] 探索開始遅延用
-
-static gatt_client_service_t Controller_Service;
-static bool controller_service_found    = false;
-static bool notify_characteristic_found = false;
-
-static int Rssi_server  = 0;
-static int rssi_counter = 0;
-
-static void handle_gatt_client_event(uint8_t packet_type, uint16_t channel,uint8_t *packet, uint16_t size);
 
 // -------------------------------------------------------
-// スキャン開始
+// 前方宣言
 // -------------------------------------------------------
-static void client_start(void) {
-    DEBUG_LOG("[BLE] Start scanning...\n");
-    state = TC_W4_SCAN_RESULT;
-    gap_set_scan_parameters(0, 0x0030, 0x0030);
-    gap_start_scan();
+static void spp_client_packet_handler(uint8_t packet_type, uint16_t channel,
+                                      uint8_t *packet, uint16_t size);
+static void client_start_inquiry(void);
+
+// -------------------------------------------------------
+// Inquiry 開始
+// -------------------------------------------------------
+static void client_start_inquiry(void) {
+    DEBUG_LOG("[SPP] Starting Inquiry...\n");
+    state        = TC_W4_INQUIRY_RESULT;
+    server_found = false;
+    // General/Unlimited Inquiry Access Code, INQUIRY_DURATION × 1.28s, 最大応答数=0(無制限)
+    gap_inquiry_start(INQUIRY_DURATION);
 }
 
 // -------------------------------------------------------
-// アドバタイズパケット内の名前チェック
-// -------------------------------------------------------
-static bool advertisement_report_contains_name(const char *name, uint8_t *advertisement_report) {
-    const uint8_t *adv_data = gap_event_advertising_report_get_data(advertisement_report);
-    uint8_t        adv_len  = gap_event_advertising_report_get_data_length(advertisement_report);
-
-    ad_context_t context;
-    for (ad_iterator_init(&context, adv_len, adv_data);
-         ad_iterator_has_more(&context);
-         ad_iterator_next(&context)) {
-
-        uint8_t        data_type = ad_iterator_get_data_type(&context);
-        uint8_t        data_size = ad_iterator_get_data_len(&context);
-        const uint8_t *data      = ad_iterator_get_data(&context);
-
-        if (data_type == BLUETOOTH_DATA_TYPE_COMPLETE_LOCAL_NAME ||
-            data_type == BLUETOOTH_DATA_TYPE_SHORTENED_LOCAL_NAME) {
-
-            printf("[ADV] Name (len=%d): ", data_size);
-            for (int i = 0; i < data_size; i++) printf("%c", data[i]);
-            printf("\n");
-
-            if (data_size == (uint8_t)strlen(name) &&
-                memcmp(data, name, data_size) == 0) {
-                printf("[ADV] MATCH: '%s'\n", name);
-                return true;
-            }
-        }
-    }
-    return false;
-}
-
-// -------------------------------------------------------
-// [修正7] サービス探索開始を遅延させるタイマーコールバック
-// Connection Update完了直後はATTサーバーが応答できない場合があるため
-// 200ms待ってから探索を開始する
-// -------------------------------------------------------
-static void service_discovery_timer_handler(btstack_timer_source_t *ts) {
-    UNUSED(ts);
-    printf("[GATT] Starting primary service discovery (after delay)...\n");
-    printf("[STATE] TC_W4_SERVICE_DISCOVERY_DELAY -> TC_W4_SERVICE_RESULT\n");
-    state = TC_W4_SERVICE_RESULT;
-    controller_service_found    = false;
-    notify_characteristic_found = false;
-    gatt_client_discover_primary_services(handle_gatt_client_event, connection_handle);
-}
-
-// -------------------------------------------------------
-// Connection Updateを遅延送信するタイマーコールバック
-// -------------------------------------------------------
-// [修正8] CONNECTION_UPDATE_DISABLE が 1 の場合はスキップ
-#define CONNECTION_UPDATE_DISABLE  1  // 0=有効, 1=無効(テスト用)
-
-static void connection_update_timer_handler(btstack_timer_source_t *ts) {
-    UNUSED(ts);
-    if (CONNECTION_UPDATE_DISABLE) {
-        printf("[BLE] Connection Update is DISABLED (skipping)\n");
-        printf("[GATT] Transitioning to service discovery delay...\n");
-        state = TC_W4_SERVICE_DISCOVERY_DELAY;
-        btstack_run_loop_set_timer(&service_discovery_timer, SERVICE_DISCOVERY_DELAY_MS);
-        btstack_run_loop_add_timer(&service_discovery_timer);
-        return;
-    }
-    printf("[BLE] Sending connection parameter update (interval=15ms)\n");
-    hci_send_cmd(&hci_le_connection_update,
-                 connection_handle,
-                 8, 8,    // interval_min / interval_max (12 × 1.25ms = 15ms)
-                 0,       // slave_latency
-                 100,     // supervision_timeout (100 × 10ms = 1000ms)
-                 0, 0xFFFF);
-}
-
-// -------------------------------------------------------
-// GATT クライアントイベントハンドラ
-// -------------------------------------------------------
-static void handle_gatt_client_event(uint8_t packet_type, uint16_t channel,
-                                     uint8_t *packet, uint16_t size) {
-    UNUSED(packet_type);
-    UNUSED(channel);
-    UNUSED(size);
-
-    uint8_t att_status;
-
-    switch (state) {
-
-        // --------------------------------------------------
-        case TC_W4_SERVICE_RESULT:
-        // --------------------------------------------------
-            switch (hci_event_packet_get_type(packet)) {
-
-                case GATT_EVENT_SERVICE_QUERY_RESULT: {
-                    gatt_client_service_t service;
-                    gatt_event_service_query_result_get_service(packet, &service);
-
-                    printf("[GATT] Service found: handle=0x%04x-0x%04x uuid16=0x%04x\n",
-                           service.start_group_handle,
-                           service.end_group_handle,
-                           service.uuid16);
-
-                    if (service.uuid16 == 0 &&
-                        memcmp(service.uuid128, picow_service_uuid, 16) == 0) {
-                        Controller_Service       = service;
-                        controller_service_found = true;
-                        printf("[GATT] ✓ Found Controller service!\n");
-                    }
-                    break;
-                }
-
-                case GATT_EVENT_QUERY_COMPLETE:
-                    att_status = gatt_event_query_complete_get_att_status(packet);
-                    if (att_status != ATT_ERROR_SUCCESS) {
-                        printf("[GATT] Service query error: 0x%02x\n", att_status);
-                        // [修正7] エラー時は少し待ってから再試行（即切断しない）
-                        printf("[GATT] Retrying service discovery in 500ms...\n");
-                        state = TC_W4_SERVICE_DISCOVERY_DELAY;
-                        btstack_run_loop_set_timer(&service_discovery_timer, 500);
-                        btstack_run_loop_add_timer(&service_discovery_timer);
-                        break;
-                    }
-
-                    if (!controller_service_found) {
-                        printf("[GATT] Controller service not found, disconnecting\n");
-                        gap_disconnect(connection_handle);
-                        break;
-                    }
-
-                    state = TC_W4_CHARACTERISTIC_RESULT;
-                    notify_characteristic_found = false;
-                    printf("[GATT] Discovering characteristics...\n");
-                    gatt_client_discover_characteristics_for_service(
-                        handle_gatt_client_event,
-                        connection_handle,
-                        &Controller_Service);
-                    break;
-
-                default:
-                    break;
-            }
-            break;
-
-        // --------------------------------------------------
-        case TC_W4_CHARACTERISTIC_RESULT:
-        // --------------------------------------------------
-            switch (hci_event_packet_get_type(packet)) {
-
-                case GATT_EVENT_CHARACTERISTIC_QUERY_RESULT: {
-                    gatt_client_characteristic_t ch;
-                    gatt_event_characteristic_query_result_get_characteristic(packet, &ch);
-
-                    printf("[GATT] Characteristic: handle=0x%04x props=0x%02x uuid16=0x%04x\n",
-                           ch.value_handle, ch.properties, ch.uuid16);
-
-                    bool has_notify = (ch.properties & ATT_PROPERTY_NOTIFY) != 0;
-
-                    // UUID128比較（uuid16==0 の場合）またはNotify対応の最初のCharacteristicを採用
-                    bool is_target_uuid = false;
-                    if (ch.uuid16 == 0) {
-                        is_target_uuid = (memcmp(ch.uuid128, controller_data_uuid, 16) == 0);
-                    }
-
-                    if (has_notify && (is_target_uuid || !notify_characteristic_found)) {
-                        server_characteristic       = ch;
-                        notify_characteristic_found = true;
-                        printf("[GATT] Using characteristic handle=0x%04x (notify capable)\n",
-                               ch.value_handle);
-                    }
-                    break;
-                }
-
-                case GATT_EVENT_QUERY_COMPLETE:
-                    att_status = gatt_event_query_complete_get_att_status(packet);
-                    if (att_status != ATT_ERROR_SUCCESS) {
-                        printf("[GATT] Characteristic query error: 0x%02x\n", att_status);
-                        gap_disconnect(connection_handle);
-                        break;
-                    }
-
-                    if (!notify_characteristic_found) {
-                        printf("[GATT] Notify characteristic not found, disconnecting\n");
-                        gap_disconnect(connection_handle);
-                        break;
-                    }
-
-                    listener_registered = true;
-                    gatt_client_listen_for_characteristic_value_updates(
-                        &notification_listener,
-                        handle_gatt_client_event,
-                        connection_handle,
-                        &server_characteristic);
-
-                    state = TC_W4_ENABLE_NOTIFICATIONS_COMPLETE;
-                    printf("[GATT] Enabling notifications on handle=0x%04x...\n",
-                           server_characteristic.value_handle);
-                    gatt_client_write_client_characteristic_configuration(
-                        handle_gatt_client_event,
-                        connection_handle,
-                        &server_characteristic,
-                        GATT_CLIENT_CHARACTERISTICS_CONFIGURATION_NOTIFICATION);
-                    break;
-
-                default:
-                    break;
-            }
-            break;
-
-        // --------------------------------------------------
-        case TC_W4_ENABLE_NOTIFICATIONS_COMPLETE:
-        // --------------------------------------------------
-            switch (hci_event_packet_get_type(packet)) {
-                case GATT_EVENT_QUERY_COMPLETE:
-                    att_status = gatt_event_query_complete_get_att_status(packet);
-                    printf("[GATT] Notifications enable result: 0x%02x\n", att_status);
-                    if (att_status != ATT_ERROR_SUCCESS) {
-                        gap_disconnect(connection_handle);
-                        break;
-                    }
-                    state = TC_W4_READY;
-                    printf("[BLE] ===== READY - Receiving controller data =====\n");
-                    break;
-                default:
-                    break;
-            }
-            break;
-
-        // --------------------------------------------------
-        case TC_W4_READY:
-        // --------------------------------------------------
-            switch (hci_event_packet_get_type(packet)) {
-
-                case GATT_EVENT_NOTIFICATION: {
-                    uint16_t       value_length = gatt_event_notification_get_value_length(packet);
-                    const uint8_t *value        = gatt_event_notification_get_value(packet);
-
-                    if (value_length != sizeof(ds4_data)) {
-                        printf("[RX] Unexpected length: %d (expected %d)\n",
-                               value_length, (int)sizeof(ds4_data));
-                        break;
-                    }
-
-                    ds4_data controller;
-                    memcpy(&controller, value, sizeof(ds4_data));
-
-                    // チェックサム検証
-                    uint8_t sum = (uint8_t)(1 +
-                        controller.jyoutai + controller.L_x + controller.L_y +
-                        controller.R_x    + controller.R_y  + controller.L2   +
-                        controller.R2     + controller.key  + controller.boton);
-                    bool valid = ((sum % 255) == controller.checsam);
-
-                    // RSSIをカウンタ方式で定期取得
-                    if (++rssi_counter >= RSSI_SAMPLE_INTERVAL) {
-                        rssi_counter = 0;
-                        gap_read_rssi(connection_handle);
-                    }
-
-                    printf("[RX] %s LX=%4d LY=%4d RX=%4d RY=%4d "
-                           "L2=%3d R2=%3d key=%02x btn=%02x RSSI=%ddBm\n",
-                           valid ? "OK" : "NG",
-                           controller.L_x, controller.L_y,
-                           controller.R_x, controller.R_y,
-                           controller.L2,  controller.R2,
-                           controller.key, controller.boton,
-                           Rssi_server);
-                    break;
-                }
-
-                default:
-                    printf("[GATT] Unknown packet: 0x%02x\n",
-                           hci_event_packet_get_type(packet));
-                    break;
-            }
-            break;
-
-        // --------------------------------------------------
-        case TC_W4_SERVICE_DISCOVERY_DELAY:
-        // --------------------------------------------------
-            // タイマー待機中はGATTイベントを無視
-            break;
-
-        default:
-            DEBUG_LOG("[GATT] Unhandled state: %d\n", state);
-            break;
-    }
-}
-
-// -------------------------------------------------------
-// HCI イベントハンドラ
-// -------------------------------------------------------
-static void hci_event_handler(uint8_t packet_type, uint16_t channel,
-                               uint8_t *packet, uint16_t size) {
-    UNUSED(size);
-    UNUSED(channel);
-    bd_addr_t local_addr;
-
-    if (packet_type != HCI_EVENT_PACKET) return;
-
-    uint8_t event_type = hci_event_packet_get_type(packet);
-    switch (event_type) {
-
-        case BTSTACK_EVENT_STATE:
-            if (btstack_event_state_get_state(packet) == HCI_STATE_WORKING) {
-                gap_local_bd_addr(local_addr);
-                printf("[BLE] BTstack up on %s\n", bd_addr_to_str(local_addr));
-                client_start();
-            } else {
-                state = TC_OFF;
-            }
-            break;
-
-        case GAP_EVENT_ADVERTISING_REPORT:
-            if (state != TC_W4_SCAN_RESULT) return;
-            if (!advertisement_report_contains_name("PicoW Controller", packet)) return;
-
-            gap_event_advertising_report_get_address(packet, server_addr);
-            server_addr_type = gap_event_advertising_report_get_address_type(packet);
-            state = TC_W4_CONNECT;
-            gap_stop_scan();
-            printf("[BLE] Connecting to %s...\n", bd_addr_to_str(server_addr));
-            gap_connect(server_addr, server_addr_type);
-            break;
-
-        case HCI_EVENT_LE_META:
-            switch (hci_event_le_meta_get_subevent_code(packet)) {
-
-                case HCI_SUBEVENT_LE_CONNECTION_COMPLETE:
-                    if (state != TC_W4_CONNECT) return;
-                    connection_handle = hci_subevent_le_connection_complete_get_connection_handle(packet);
-
-                    {
-                        // 接続時のInterval（Peripheral側が設定した値）をログ出力
-                        uint16_t init_interval = hci_subevent_le_connection_complete_get_conn_interval(packet);
-                        printf("[BLE] Connected! handle=0x%04x initial_interval=%.2fms\n",
-                               connection_handle, init_interval * 1.25f);
-                    }
-
-                    printf("[STATE] TC_W4_CONNECT -> TC_W4_CONNECTION_UPDATE_COMPLETE\n");
-                    // Connection Updateを500ms後に送信
-                    state = TC_W4_CONNECTION_UPDATE_COMPLETE;
-                    btstack_run_loop_set_timer(&connection_update_timer, CONNECTION_UPDATE_DELAY_MS);
-                    btstack_run_loop_add_timer(&connection_update_timer);
-                    break;
-
-                case HCI_SUBEVENT_LE_CONNECTION_UPDATE_COMPLETE: {
-                    uint8_t  status   = hci_subevent_le_connection_update_complete_get_status(packet);
-                    uint16_t interval = hci_subevent_le_connection_update_complete_get_conn_interval(packet);
-                    printf("[BLE] Connection update: status=0x%02x interval=%d (%.2fms)\n",
-                           status, interval, interval * 1.25f);
-                    printf("[STATE] TC_W4_CONNECTION_UPDATE_COMPLETE -> TC_W4_SERVICE_DISCOVERY_DELAY\n");
-
-                    // [修正7] Update完了後すぐではなく200ms後にサービス探索を開始
-                    // ATTサーバーの準備完了を待つ
-                    state = TC_W4_SERVICE_DISCOVERY_DELAY;
-                    printf("[GATT] Waiting %dms before service discovery...\n",
-                           SERVICE_DISCOVERY_DELAY_MS);
-                    btstack_run_loop_set_timer(&service_discovery_timer, SERVICE_DISCOVERY_DELAY_MS);
-                    btstack_run_loop_add_timer(&service_discovery_timer);
-                    break;
-                }
-
-                default:
-                    break;
-            }
-            break;
-
-        case HCI_EVENT_COMMAND_COMPLETE: {
-            uint16_t opcode = hci_event_command_complete_get_command_opcode(packet);
-            if (opcode == HCI_OPCODE_HCI_READ_RSSI) {
-                // return_parameters: [status(1), handle(2), rssi(1)]
-                Rssi_server = (int8_t)hci_event_command_complete_get_return_parameters(packet)[3];
-                printf("[RSSI] %d dBm\n", Rssi_server);
-            }
-            break;
-        }
-
-        case HCI_EVENT_DISCONNECTION_COMPLETE:
-            // 残っているタイマーをすべて止める
-            btstack_run_loop_remove_timer(&connection_update_timer);
-            btstack_run_loop_remove_timer(&service_discovery_timer);
-
-            connection_handle = HCI_CON_HANDLE_INVALID;
-            if (listener_registered) {
-                listener_registered = false;
-                gatt_client_stop_listening_for_characteristic_value_updates(
-                    &notification_listener);
-            }
-            printf("[BLE] Disconnected from %s\n", bd_addr_to_str(server_addr));
-            if (state == TC_OFF) break;
-            client_start();
-            break;
-
-        default:
-            break;
-    }
-}
-
-// -------------------------------------------------------
-// LEDハートビートタイマー
+// LED ハートビートタイマー
 // -------------------------------------------------------
 static void heartbeat_handler(struct btstack_timer_source *ts) {
-    static bool quick_flash = false;
-    static bool led_on      = true;
-
+    static bool led_on = true;
     led_on = !led_on;
     cyw43_arch_gpio_put(CYW43_WL_GPIO_LED_PIN, led_on);
 
-    if (listener_registered && led_on) {
-        quick_flash = !quick_flash;
-    } else if (!listener_registered) {
-        quick_flash = false;
-    }
-
     btstack_run_loop_set_timer(ts,
-        (led_on || quick_flash) ? LED_QUICK_FLASH_DELAY_MS : LED_SLOW_FLASH_DELAY_MS);
+        (state == TC_W4_READY) ? LED_FLASH_CONNECTED_MS : LED_FLASH_IDLE_MS);
     btstack_run_loop_add_timer(ts);
+}
+
+// -------------------------------------------------------
+// メインパケットハンドラ
+// HCI イベント + RFCOMM イベント + RFCOMM データを一元処理
+// -------------------------------------------------------
+static void spp_client_packet_handler(uint8_t packet_type, uint16_t channel,
+                                      uint8_t *packet, uint16_t size) {
+    UNUSED(channel);
+
+    bd_addr_t event_addr;
+
+    switch (packet_type) {
+
+        // --------------------------------------------------
+        // HCI イベント
+        // --------------------------------------------------
+        case HCI_EVENT_PACKET:
+            switch (hci_event_packet_get_type(packet)) {
+
+                // --- スタック起動 ---
+                case BTSTACK_EVENT_STATE:
+                    if (btstack_event_state_get_state(packet) == HCI_STATE_WORKING) {
+                        gap_local_bd_addr(event_addr);
+                        printf("[SPP] BTstack up on %s\n", bd_addr_to_str(event_addr));
+                        client_start_inquiry();
+                    } else {
+                        state = TC_OFF;
+                    }
+                    break;
+
+                // --- Inquiry 結果（1デバイスごとに届く）---
+                case GAP_EVENT_INQUIRY_RESULT: {
+                    if (state != TC_W4_INQUIRY_RESULT) break;
+
+                    // BD アドレス取得（出力引数形式）
+                    bd_addr_t found_addr;
+                    gap_event_inquiry_result_get_bd_addr(packet, found_addr);
+
+                    // EIR にデバイス名が含まれているか確認
+                    // 正しい API: gap_event_inquiry_result_get_name_available / _len / (data)
+                    char name_buffer[240];
+                    bool has_name = (bool)gap_event_inquiry_result_get_name_available(packet);
+                    if (has_name) {
+                        uint8_t name_len = gap_event_inquiry_result_get_name_len(packet);
+                        const uint8_t *name_data = gap_event_inquiry_result_get_name(packet);
+                        if (name_len >= sizeof(name_buffer)) name_len = sizeof(name_buffer) - 1;
+                        memcpy(name_buffer, name_data, name_len);
+                        name_buffer[name_len] = '\0';
+                        printf("[INQ] Found: %s -> name: %s\n",
+                               bd_addr_to_str(found_addr), name_buffer);
+
+                        if (strncmp(name_buffer, TARGET_DEVICE_NAME,
+                                    strlen(TARGET_DEVICE_NAME)) == 0) {
+                            memcpy(server_addr, found_addr, sizeof(bd_addr_t));
+                            server_found = true;
+                            printf("[INQ] Target found: %s\n", bd_addr_to_str(server_addr));
+                        }
+                    } else {
+                        // 名前なし: Remote Name Request フォールバック用にアドレスを保存
+                        printf("[INQ] Found (no name): %s\n", bd_addr_to_str(found_addr));
+                        // Inquiry完了後に gap_remote_name_request で名前を取得する
+                        // （複数台あれば最後の1台のみ保存する簡易実装）
+                        if (!server_found) {
+                            memcpy(server_addr, found_addr, sizeof(bd_addr_t));
+                            // pageScanRepetitionMode と clockOffset も保存が理想だが
+                            // 簡易実装のため固定値を使用（動作はする）
+                        }
+                    }
+                    break;
+                }
+
+                // --- Inquiry 完了 ---
+                case GAP_EVENT_INQUIRY_COMPLETE:
+                    if (state != TC_W4_INQUIRY_RESULT) break;
+                    if (server_found) {
+                        // EIR で名前取得済み → 即接続
+                        state = TC_W4_CONNECT;
+                        printf("[SPP] Connecting to %s channel=%d...\n",
+                               bd_addr_to_str(server_addr), SPP_RFCOMM_CHANNEL);
+                        rfcomm_create_channel(spp_client_packet_handler,
+                                             server_addr,
+                                             SPP_RFCOMM_CHANNEL,
+                                             &rfcomm_cid);
+                    } else {
+                        // EIR に名前なし & 候補アドレスあり → Remote Name Request
+                        static const bd_addr_t zero_addr = {0};
+                        if (memcmp(server_addr, zero_addr, sizeof(bd_addr_t)) != 0) {
+                            printf("[INQ] Requesting remote name from %s...\n",
+                                   bd_addr_to_str(server_addr));
+                            gap_remote_name_request(server_addr, 0, 0);
+                        } else {
+                            printf("[INQ] No devices found, retrying...\n");
+                            client_start_inquiry();
+                        }
+                    }
+                    break;
+
+                // --- Remote Name Request 完了（EIR に名前がなかった場合のフォールバック）---
+                case HCI_EVENT_REMOTE_NAME_REQUEST_COMPLETE: {
+                    if (state != TC_W4_INQUIRY_RESULT) break;
+                    bd_addr_t name_addr;
+                    // hci_event_remote_name_request_complete_get_bd_addr は出力引数
+                    reverse_bd_addr(&packet[3], name_addr);
+                    uint8_t status = packet[2];
+                    if (status != ERROR_CODE_SUCCESS) {
+                        printf("[INQ] Remote name request failed for %s\n",
+                               bd_addr_to_str(name_addr));
+                        break;
+                    }
+                    const char *remote_name = (const char *)&packet[9];
+                    printf("[INQ] Remote name: %s -> %s\n",
+                           bd_addr_to_str(name_addr), remote_name);
+                    if (strncmp(remote_name, TARGET_DEVICE_NAME,
+                                strlen(TARGET_DEVICE_NAME)) == 0) {
+                        memcpy(server_addr, name_addr, sizeof(bd_addr_t));
+                        server_found = true;
+                        printf("[INQ] Target found via name request: %s\n",
+                               bd_addr_to_str(server_addr));
+                        // 即接続開始
+                        state = TC_W4_CONNECT;
+                        printf("[SPP] Connecting to %s channel=%d...\n",
+                               bd_addr_to_str(server_addr), SPP_RFCOMM_CHANNEL);
+                        rfcomm_create_channel(spp_client_packet_handler,
+                                             server_addr,
+                                             SPP_RFCOMM_CHANNEL,
+                                             &rfcomm_cid);
+                    }
+                    break;
+                }
+
+                // --- ペアリング PIN コード要求 ---
+                case HCI_EVENT_PIN_CODE_REQUEST:
+                    printf("[SPP] PIN code request\n");
+                    hci_event_pin_code_request_get_bd_addr(packet, event_addr);
+                    gap_pin_code_response(event_addr, "0000");
+                    break;
+
+                // --- SSP 数値比較 ---
+                case HCI_EVENT_USER_CONFIRMATION_REQUEST:
+                    hci_event_user_confirmation_request_get_bd_addr(packet, event_addr);
+                    gap_ssp_confirmation_response(event_addr);
+                    break;
+
+                // --- RFCOMM チャンネル開通 ---
+                case RFCOMM_EVENT_CHANNEL_OPENED:
+                    if (rfcomm_event_channel_opened_get_status(packet) != ERROR_CODE_SUCCESS) {
+                        printf("[SPP] Connection failed: 0x%02x\n",
+                               rfcomm_event_channel_opened_get_status(packet));
+                        rfcomm_cid = 0;
+                        // 失敗したら Inquiry からやり直し
+                        client_start_inquiry();
+                        break;
+                    }
+                    rfcomm_cid = rfcomm_event_channel_opened_get_rfcomm_cid(packet);
+                    state      = TC_W4_READY;
+                    printf("[SPP] ===== READY cid=0x%04x mtu=%d =====\n",
+                           rfcomm_cid,
+                           rfcomm_event_channel_opened_get_max_frame_size(packet));
+                    break;
+
+                // --- RFCOMM チャンネル切断 ---
+                case RFCOMM_EVENT_CHANNEL_CLOSED:
+                    printf("[SPP] Disconnected\n");
+                    rfcomm_cid = 0;
+                    if (state == TC_OFF) break;
+                    // 自動再接続
+                    client_start_inquiry();
+                    break;
+
+                // --- RSSI 読み取り結果 ---
+                case HCI_EVENT_COMMAND_COMPLETE: {
+                    uint16_t opcode = hci_event_command_complete_get_command_opcode(packet);
+                    if (opcode == HCI_OPCODE_HCI_READ_RSSI) {
+                        rssi_server = (int8_t)hci_event_command_complete_get_return_parameters(packet)[3];
+                        printf("[RSSI] %d dBm\n", rssi_server);
+                    }
+                    break;
+                }
+
+                default:
+                    break;
+            }
+            break;
+
+        // --------------------------------------------------
+        // RFCOMM データ受信
+        // BLE の GATT Notify に相当
+        // --------------------------------------------------
+        case RFCOMM_DATA_PACKET: {
+            if (size != sizeof(ds4_data)) {
+                printf("[RX] Unexpected length: %d (expected %d)\n",
+                       size, (int)sizeof(ds4_data));
+                // RFCOMM フロー制御: 受信処理後にクレジットを返す
+                rfcomm_grant_credits(rfcomm_cid, 1);
+                break;
+            }
+
+            ds4_data controller;
+            memcpy(&controller, packet, sizeof(ds4_data));
+
+            // チェックサム検証
+            uint8_t sum = (uint8_t)(1 +
+                controller.jyoutai + controller.L_x + controller.L_y +
+                controller.R_x    + controller.R_y  + controller.L2   +
+                controller.R2     + controller.key  + controller.boton);
+            bool valid = ((sum % 255) == controller.checsam);
+
+            // RSSI 定期取得（Classic は hci_connection_handle_for_bd_addr で handle を取得）
+            if (++rssi_counter >= RSSI_SAMPLE_INTERVAL) {
+                rssi_counter = 0;
+                hci_connection_t *con = hci_connection_for_bd_addr_and_type(
+                    server_addr, BD_ADDR_TYPE_ACL);
+                if (con != NULL) {
+                    gap_read_rssi(con->con_handle);
+                }
+            }
+
+            printf("[RX] %s LX=%4d LY=%4d RX=%4d RY=%4d "
+                   "L2=%3d R2=%3d key=%02x btn=%02x RSSI=%ddBm\n",
+                   valid ? "OK" : "NG",
+                   controller.L_x, controller.L_y,
+                   controller.R_x, controller.R_y,
+                   controller.L2,  controller.R2,
+                   controller.key, controller.boton,
+                   rssi_server);
+
+            // RFCOMM クレジットを返して次パケットを受信可能にする
+            rfcomm_grant_credits(rfcomm_cid, 1);
+            break;
+        }
+
+        default:
+            break;
+    }
 }
 
 // -------------------------------------------------------
@@ -549,26 +349,26 @@ int main(void) {
         return -1;
     }
 
+    // --- BTstack プロトコルスタック初期化 ---
     l2cap_init();
-    sm_init();
-    sm_set_io_capabilities(IO_CAPABILITY_NO_INPUT_NO_OUTPUT);
+    rfcomm_init();
 
-    // タイマーコールバックを登録
-    connection_update_timer.process  = &connection_update_timer_handler;
-    service_discovery_timer.process  = &service_discovery_timer_handler;  // [修正7]
+    // SSP 設定（サーバー側と合わせる）
+    gap_ssp_set_authentication_requirement(SSP_IO_CAPABILITY_DISPLAY_YES_NO);
+    gap_ssp_set_io_capability(SSP_IO_CAPABILITY_DISPLAY_YES_NO);
 
-    // LE Peripheral がATTクエリを出す場合（Android/iOS対応）のため空のATTサーバを設定
-    att_server_init(NULL, NULL, NULL);
-
-    gatt_client_init();
-
-    hci_event_callback_registration.callback = &hci_event_handler;
+    // HCI イベントハンドラ登録
+    hci_event_callback_registration.callback = &spp_client_packet_handler;
     hci_add_event_handler(&hci_event_callback_registration);
 
-    // LEDハートビートタイマー開始
+    // LED ハートビートタイマー開始
     heartbeat.process = &heartbeat_handler;
-    btstack_run_loop_set_timer(&heartbeat, LED_SLOW_FLASH_DELAY_MS);
+    btstack_run_loop_set_timer(&heartbeat, LED_FLASH_IDLE_MS);
     btstack_run_loop_add_timer(&heartbeat);
+
+    // EIR（Extended Inquiry Result）を有効化してInquiry結果に名前を含める
+    // INQUIRY_MODE_RSSI_AND_EIR = 2
+    hci_set_inquiry_mode(INQUIRY_MODE_RSSI_AND_EIR);
 
     hci_power_control(HCI_POWER_ON);
     btstack_run_loop_execute();

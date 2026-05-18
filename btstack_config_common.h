@@ -1,19 +1,19 @@
 #ifndef _PICO_BTSTACK_CONFIG_COMMON_H
 #define _PICO_BTSTACK_CONFIG_COMMON_H
 
-#ifndef ENABLE_BLE
-#error Please link to pico_btstack_ble
-#endif
+// #ifndef ENABLE_BLE
+// #error Please link to pico_btstack_ble
+// #endif
 
 // BTstack features that can be enabled
-#define ENABLE_LE_PERIPHERAL
+// #define ENABLE_LE_PERIPHERAL
 #define ENABLE_LOG_INFO
 #define ENABLE_LOG_ERROR
 #define ENABLE_PRINTF_HEXDUMP
 
 // for the client
 #if RUNNING_AS_CLIENT
-#define ENABLE_LE_CENTRAL
+// #define ENABLE_LE_CENTRAL
 #define MAX_NR_GATT_CLIENTS 1
 #else
 #define MAX_NR_GATT_CLIENTS 0
