@@ -165,7 +165,7 @@ static void spp_client_packet_handler(uint8_t packet_type, uint16_t channel,
                 }
 
                 // --- Inquiry 完了 → ACL 接続確立 ---
-                case GAP_EVENT_INQUIRY_COMPLETE:
+                case GAP_EVENT_INQUIRY_COMPLETE:{
                     if (state != TC_W4_INQUIRY_RESULT) break;
                     if (!server_found) {
                         printf("[INQ] Target not found, retrying...\n");
@@ -188,6 +188,7 @@ static void spp_client_packet_handler(uint8_t packet_type, uint16_t channel,
                         client_start_inquiry();
                     }
                     break;
+                }
 
                 // --- HCI ACL 接続完了 → SDP Query 開始 ---
                 case HCI_EVENT_CONNECTION_COMPLETE: {
@@ -260,20 +261,22 @@ static void spp_client_packet_handler(uint8_t packet_type, uint16_t channel,
                 }
 
                 // --- ペアリング PIN ---
-                case HCI_EVENT_PIN_CODE_REQUEST:
+                case HCI_EVENT_PIN_CODE_REQUEST:{
                     printf("[SPP] PIN code request\n");
                     hci_event_pin_code_request_get_bd_addr(packet, event_addr);
                     gap_pin_code_response(event_addr, "0000");
                     break;
+                }
 
                 // --- SSP 自動承認 ---
-                case HCI_EVENT_USER_CONFIRMATION_REQUEST:
+                case HCI_EVENT_USER_CONFIRMATION_REQUEST:{
                     hci_event_user_confirmation_request_get_bd_addr(packet, event_addr);
                     gap_ssp_confirmation_response(event_addr);
                     break;
+                }
 
                 // --- RFCOMM 接続完了 ---
-                case RFCOMM_EVENT_CHANNEL_OPENED:
+                case RFCOMM_EVENT_CHANNEL_OPENED:{
                     if (rfcomm_event_channel_opened_get_status(packet) != ERROR_CODE_SUCCESS) {
                         printf("[RFCOMM] Channel open failed: 0x%02x\n",
                                rfcomm_event_channel_opened_get_status(packet));
@@ -288,23 +291,26 @@ static void spp_client_packet_handler(uint8_t packet_type, uint16_t channel,
                            rfcomm_cid,
                            rfcomm_event_channel_opened_get_max_frame_size(packet));
                     break;
+                }
 
                 // --- 切断イベント ---
-                case HCI_EVENT_DISCONNECTION_COMPLETE:
+                case HCI_EVENT_DISCONNECTION_COMPLETE:{
                     printf("[HCI] Disconnection complete\n");
                     rfcomm_cid = 0;
                     rfcomm_channel = 0;
                     client_start_inquiry();
                     //if (state != TC_OFF) client_start_inquiry();
                     break;
+                }
 
-                case RFCOMM_EVENT_CHANNEL_CLOSED:
+                case RFCOMM_EVENT_CHANNEL_CLOSED:{
                     printf("[RFCOMM] Channel closed\n");
                     rfcomm_cid = 0;
                     rfcomm_channel = 0;
                     state = TC_OFF;
                     //if (state != TC_OFF) client_start_inquiry();
                     break;
+                }
 
                 // --- RSSI読み取り結果 ---
                 case HCI_EVENT_COMMAND_COMPLETE: {
@@ -317,8 +323,9 @@ static void spp_client_packet_handler(uint8_t packet_type, uint16_t channel,
                     break;
                 }
 
-                default:
+                default:{
                     break;
+                }
             }
             break;
 

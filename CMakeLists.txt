@@ -39,7 +39,7 @@ pico_sdk_init()
 # Flahes once quickly each second when it's running but not connected to another device
 # Flashes twice quickly each second when connected to another device and reading it's temperature
 add_executable(picow_ble_temp_reader
-    client.c
+    client.cpp
     )
 target_link_libraries(picow_ble_temp_reader
     pico_stdlib
