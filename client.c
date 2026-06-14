@@ -176,7 +176,7 @@ static void spp_client_packet_handler(uint8_t packet_type, uint16_t channel,
                     printf("[INQ] Inquiry complete, starting SDP query for %s...\n",
                            bd_addr_to_str(server_addr));
                     state = TC_W4_SDP_RESULT;
-                    
+                                       
                     int sdp_err = sdp_client_query_rfcomm_channel_and_name_for_uuid(
                         &spp_client_packet_handler,
                         server_addr,
@@ -201,19 +201,19 @@ static void spp_client_packet_handler(uint8_t packet_type, uint16_t channel,
                     printf("[HCI] ===== ACL Connection established to %s =====\n",
                            bd_addr_to_str(event_addr));
                     
-                    // [重要] ACL 接続成功後に SDP Query を実行
-                    printf("[SDP] Starting SDP query for channel discovery...\n");
-                    state = TC_W4_SDP_RESULT;
+                    // // [重要] ACL 接続成功後に SDP Query を実行
+                    // printf("[SDP] Starting SDP query for channel discovery...\n");
+                    // state = TC_W4_SDP_RESULT;
                     
-                    int sdp_err = sdp_client_query_rfcomm_channel_and_name_for_uuid(
-                        &spp_client_packet_handler,
-                        server_addr,
-                        BLUETOOTH_SERVICE_CLASS_SERIAL_PORT
-                    );
-                    if (sdp_err != 0) {
-                        printf("[SDP] ERROR: SDP query failed: %d\n", sdp_err);
-                        client_start_inquiry();
-                    }
+                    // int sdp_err = sdp_client_query_rfcomm_channel_and_name_for_uuid(
+                    //     &spp_client_packet_handler,
+                    //     server_addr,
+                    //     BLUETOOTH_SERVICE_CLASS_SERIAL_PORT
+                    // );
+                    // if (sdp_err != 0) {
+                    //     printf("[SDP] ERROR: SDP query failed: %d\n", sdp_err);
+                    //     client_start_inquiry();
+                    // }
                     break;
                 }
 
@@ -278,6 +278,7 @@ static void spp_client_packet_handler(uint8_t packet_type, uint16_t channel,
                         printf("[RFCOMM] Channel open failed: 0x%02x\n",
                                rfcomm_event_channel_opened_get_status(packet));
                         rfcomm_cid = 0;
+                        rfcomm_channel = 0;
                         client_start_inquiry();
                         break;
                     }
@@ -293,13 +294,16 @@ static void spp_client_packet_handler(uint8_t packet_type, uint16_t channel,
                     printf("[HCI] Disconnection complete\n");
                     rfcomm_cid = 0;
                     rfcomm_channel = 0;
-                    if (state != TC_OFF) client_start_inquiry();
+                    client_start_inquiry();
+                    //if (state != TC_OFF) client_start_inquiry();
                     break;
 
                 case RFCOMM_EVENT_CHANNEL_CLOSED:
                     printf("[RFCOMM] Channel closed\n");
                     rfcomm_cid = 0;
-                    if (state != TC_OFF) client_start_inquiry();
+                    rfcomm_channel = 0;
+                    state = TC_OFF;
+                    //if (state != TC_OFF) client_start_inquiry();
                     break;
 
                 // --- RSSI読み取り結果 ---
@@ -334,7 +338,7 @@ static void spp_client_packet_handler(uint8_t packet_type, uint16_t channel,
                 controller.jyoutai + controller.L_x + controller.L_y +
                 controller.R_x    + controller.R_y  + controller.L2  +
                 controller.R2     + controller.key  + controller.boton);
-            bool valid = ((sum % 255) == controller.checsam);
+            bool valid = ((sum % 256) == controller.checsam);
 
             // RSSI 定期取得
             if (++rssi_counter >= RSSI_SAMPLE_INTERVAL) {
