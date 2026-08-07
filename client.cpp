@@ -341,29 +341,28 @@ static void spp_client_packet_handler(uint8_t packet_type, uint16_t channel,
             ds4_data controller;
             memcpy(&controller, packet, sizeof(ds4_data));
 
-            uint8_t sum = (uint8_t)(1 +
+            int sum = 
                 controller.jyoutai + controller.L_x + controller.L_y +
                 controller.R_x    + controller.R_y  + controller.L2  +
-                controller.R2     + controller.key  + controller.boton);
-            bool valid = ((sum % 256) == controller.checsam);
+                controller.R2     + controller.key  + controller.boton;
+            bool valid = ((sum % 255) + 1 == controller.checsam);
 
             // RSSI 定期取得
-            if (++rssi_counter >= RSSI_SAMPLE_INTERVAL) {
-                rssi_counter = 0;
-                hci_connection_t *con = hci_connection_for_bd_addr_and_type(server_addr, BD_ADDR_TYPE_ACL);
-                if (con != NULL) {
-                    gap_read_rssi(con->con_handle);
-                }
-            }
-
-            printf("[RX] %s LX=%3d LY=%3d RX=%3d RY=%3d "
-                   "L2=%3d R2=%3d key=%02x btn=%02x RSSI=%ddBm\n",
+            // if (++rssi_counter >= RSSI_SAMPLE_INTERVAL) {
+            //     rssi_counter = 0;
+            //     hci_connection_t *con = hci_connection_for_bd_addr_and_type(server_addr, BD_ADDR_TYPE_ACL);
+            //     if (con != NULL) {
+            //         gap_read_rssi(con->con_handle);
+            //     }
+            // }
+            
+            printf("[RX] %s Data:%02x-%02x-%02x-%02x-%02x-%02x-%02x-%02x-%02x cek=%3d\n",
                    valid ? "OK" : "NG",
                    controller.L_x, controller.L_y,
                    controller.R_x, controller.R_y,
                    controller.L2,  controller.R2,
-                   controller.key, controller.boton,
-                   rssi_server);
+                   controller.key, controller.boton, controller.jyoutai,
+                   controller.checsam);
 
             rfcomm_grant_credits(rfcomm_cid, 1);
             break;
