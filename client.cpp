@@ -55,6 +55,10 @@ static int        rssi_counter = 0;
 
 static btstack_timer_source_t heartbeat;
 
+#define ConectLED_D1 6
+#define BlueLED_D2 3
+#define Yellow_D3 2
+
 // -------------------------------------------------------
 // 前方宣言
 // -------------------------------------------------------
@@ -347,8 +351,26 @@ static void spp_client_packet_handler(uint8_t packet_type, uint16_t channel,
                 controller.R2     + controller.key  + controller.boton;
             bool valid = ((sum % 255) + 1 == controller.checsam);
 
+            static uint32_t callback_count = 0;
+            static uint32_t byte_count = 0;
+            static absolute_time_t last_log;
+
+            callback_count++;
+            byte_count += size;
+            absolute_time_t now = get_absolute_time();
+
+            if (absolute_time_diff_us(last_log, now) >= 1000000) {
+                printf("RFCOMM callbacks=%lu bytes=%lu last_size=%u\n",
+                    callback_count,byte_count,size);
+                printf("[LastData] %s Lx:%3d,Rx:%3d,ste:%3d\n", valid ? "OK" : "NG",
+                    controller.L_x,controller.R_x,controller.jyoutai);
+                callback_count = 0;
+                byte_count = 0;
+                last_log = now;
+            }
+
             // RSSI 定期取得
-            // if (++rssi_counter >= RSSI_SAMPLE_INTERVAL) {
+            // if (++rssi_counter >= RSSI_SAMPLE_INTERVAL) 
             //     rssi_counter = 0;
             //     hci_connection_t *con = hci_connection_for_bd_addr_and_type(server_addr, BD_ADDR_TYPE_ACL);
             //     if (con != NULL) {
@@ -356,13 +378,15 @@ static void spp_client_packet_handler(uint8_t packet_type, uint16_t channel,
             //     }
             // }
             
-            printf("[RX] %s Data:%02x-%02x-%02x-%02x-%02x-%02x-%02x-%02x-%02x cek=%3d\n",
-                   valid ? "OK" : "NG",
-                   controller.L_x, controller.L_y,
-                   controller.R_x, controller.R_y,
-                   controller.L2,  controller.R2,
-                   controller.key, controller.boton, controller.jyoutai,
-                   controller.checsam);
+            // printf("[RX] %s Data:%02x-%02x-%02x-%02x-%02x-%02x-%02x-%02x-%02x cek=%3d\n",
+            //        valid ? "OK" : "NG",
+            //        controller.L_x, controller.L_y,
+            //        controller.R_x, controller.R_y,
+            //        controller.L2,  controller.R2,
+            //        controller.key, controller.boton, controller.jyoutai,
+            //        controller.checsam);
+            // printf("[RX] %s Lx:%3d,Rx:%3d,ste:%3d\n", valid ? "OK" : "NG",
+                // controller.L_y,controller.R_x,controller.jyoutai);
 
             rfcomm_grant_credits(rfcomm_cid, 1);
             break;
@@ -404,6 +428,14 @@ int main(void) {
         printf("failed to initialise cyw43_arch\n");
         return -1;
     }
+
+    gpio_init(ConectLED_D1);
+    gpio_init(BlueLED_D2);
+    gpio_init(Yellow_D3);
+    gpio_set_dir(ConectLED_D1,GPIO_OUT);
+    gpio_set_dir(BlueLED_D2,GPIO_OUT);
+    gpio_set_dir(Yellow_D3,GPIO_OUT);
+    gpio_put(Yellow_D3,true);
 
     l2cap_init();
     rfcomm_init();
