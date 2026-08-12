@@ -13,11 +13,18 @@
 
 #include <stdio.h>
 #include <string.h>
+#include "pico/stdlib.h"
 #include "btstack.h"
 #include "pico/cyw43_arch.h"
 #include "pico/stdlib.h"
+#include "pico/multicore.h"
+
+#include "lib/E220Connect/e220.h"
+#include "hardware/uart.h"
+#include "hardware/gpio.h"
 
 #include "type.h"
+#include "send_data.h"
 
 // -------------------------------------------------------
 // 設定
@@ -26,6 +33,9 @@
 #define LED_FLASH_IDLE_MS       1000
 #define INQUIRY_DURATION         5       // Inquiry時間 × 1.28秒
 #define TARGET_DEVICE_NAME      "PicoW Controller"
+
+//#define DEBUG_LOG_BT
+//#define DEBUG_LOG_LORA
 
 // -------------------------------------------------------
 // ステートマシン
@@ -53,11 +63,13 @@ static int        rssi_server  = 0;
 static int        rssi_counter = 0;
 #define RSSI_SAMPLE_INTERVAL 30
 
-static btstack_timer_source_t heartbeat;
-
 #define ConectLED_D1 6
 #define BlueLED_D2 3
 #define Yellow_D3 2
+
+critical_section_t cs_bt_data;
+bool share_update;
+ds4_data share_data;
 
 // -------------------------------------------------------
 // 前方宣言
@@ -100,18 +112,6 @@ static void client_start_sdp_query(void) {
         server_addr,
         BLUETOOTH_SERVICE_CLASS_SERIAL_PORT   // 0x1101
     );
-}
-
-// -------------------------------------------------------
-// LED タイマー
-// -------------------------------------------------------
-static void heartbeat_handler(struct btstack_timer_source *ts) {
-    static bool led_on = true;
-    led_on = !led_on;
-    cyw43_arch_gpio_put(CYW43_WL_GPIO_LED_PIN, led_on);
-    btstack_run_loop_set_timer(ts,
-        (state == TC_W4_READY) ? LED_FLASH_CONNECTED_MS : LED_FLASH_IDLE_MS);
-    btstack_run_loop_add_timer(ts);
 }
 
 // -------------------------------------------------------
@@ -345,48 +345,46 @@ static void spp_client_packet_handler(uint8_t packet_type, uint16_t channel,
             ds4_data controller;
             memcpy(&controller, packet, sizeof(ds4_data));
 
-            int sum = 
-                controller.jyoutai + controller.L_x + controller.L_y +
-                controller.R_x    + controller.R_y  + controller.L2  +
-                controller.R2     + controller.key  + controller.boton;
-            bool valid = ((sum % 255) + 1 == controller.checsam);
+            // int sum = 
+            //     controller.jyoutai + controller.L_x + controller.L_y +
+            //     controller.R_x    + controller.R_y  + controller.L2  +
+            //     controller.R2     + controller.key  + controller.boton;
+            // bool valid = ((sum % 255) + 1 == controller.checsam);
 
-            static uint32_t callback_count = 0;
-            static uint32_t byte_count = 0;
-            static absolute_time_t last_log;
+            critical_section_enter_blocking(&cs_bt_data);
+            share_data = controller;
+            share_update = true;
+            critical_section_exit(&cs_bt_data);
 
-            callback_count++;
-            byte_count += size;
-            absolute_time_t now = get_absolute_time();
+            #if DEBUG_LOG_BT
+                static uint32_t callback_count = 0;
+                static uint32_t byte_count = 0;
+                static absolute_time_t last_log;
 
-            if (absolute_time_diff_us(last_log, now) >= 1000000) {
-                printf("RFCOMM callbacks=%lu bytes=%lu last_size=%u\n",
-                    callback_count,byte_count,size);
-                printf("[LastData] %s Lx:%3d,Rx:%3d,ste:%3d\n", valid ? "OK" : "NG",
-                    controller.L_x,controller.R_x,controller.jyoutai);
-                callback_count = 0;
-                byte_count = 0;
-                last_log = now;
-            }
+                callback_count++;
+                byte_count += size;
+                absolute_time_t now = get_absolute_time();
 
-            // RSSI 定期取得
-            // if (++rssi_counter >= RSSI_SAMPLE_INTERVAL) 
-            //     rssi_counter = 0;
-            //     hci_connection_t *con = hci_connection_for_bd_addr_and_type(server_addr, BD_ADDR_TYPE_ACL);
-            //     if (con != NULL) {
-            //         gap_read_rssi(con->con_handle);
-            //     }
-            // }
+                if (absolute_time_diff_us(last_log, now) >= 1000000) {
+                    printf("RFCOMM callbacks=%lu bytes=%lu last_size=%u\n",
+                        callback_count,byte_count,size);
+                    printf("[LastData] %s Lx:%3d,Rx:%3d,ste:%3d\n", valid ? "OK" : "NG",
+                        controller.L_x,controller.R_x,controller.jyoutai);
+                    callback_count = 0;
+                    byte_count = 0;
+                    last_log = now;
+                }
             
-            // printf("[RX] %s Data:%02x-%02x-%02x-%02x-%02x-%02x-%02x-%02x-%02x cek=%3d\n",
-            //        valid ? "OK" : "NG",
-            //        controller.L_x, controller.L_y,
-            //        controller.R_x, controller.R_y,
-            //        controller.L2,  controller.R2,
-            //        controller.key, controller.boton, controller.jyoutai,
-            //        controller.checsam);
-            // printf("[RX] %s Lx:%3d,Rx:%3d,ste:%3d\n", valid ? "OK" : "NG",
-                // controller.L_y,controller.R_x,controller.jyoutai);
+                // printf("[RX] %s Data:%02x-%02x-%02x-%02x-%02x-%02x-%02x-%02x-%02x cek=%3d\n",
+                //        valid ? "OK" : "NG",
+                //        controller.L_x, controller.L_y,
+                //        controller.R_x, controller.R_y,
+                //        controller.L2,  controller.R2,
+                //        controller.key, controller.boton, controller.jyoutai,
+                //        controller.checsam);
+                // printf("[RX] %s Lx:%3d,Rx:%3d,ste:%3d\n", valid ? "OK" : "NG",
+                    // controller.L_y,controller.R_x,controller.jyoutai);
+            #endif
 
             rfcomm_grant_credits(rfcomm_cid, 1);
             break;
@@ -395,6 +393,10 @@ static void spp_client_packet_handler(uint8_t packet_type, uint16_t channel,
         default:
             break;
     }
+}
+
+void core1_entry(){
+    Lora1_init();
 }
 
 // -------------------------------------------------------
@@ -424,11 +426,6 @@ static void spp_client_packet_handler(uint8_t packet_type, uint16_t channel,
 int main(void) {
     stdio_init_all();
 
-    if (cyw43_arch_init()) {
-        printf("failed to initialise cyw43_arch\n");
-        return -1;
-    }
-
     gpio_init(ConectLED_D1);
     gpio_init(BlueLED_D2);
     gpio_init(Yellow_D3);
@@ -436,6 +433,14 @@ int main(void) {
     gpio_set_dir(BlueLED_D2,GPIO_OUT);
     gpio_set_dir(Yellow_D3,GPIO_OUT);
     gpio_put(Yellow_D3,true);
+
+    critical_section_init(&cs_bt_data);
+    multicore_launch_core1(core1_entry);
+
+    if (cyw43_arch_init()) {
+        printf("failed to initialise cyw43_arch\n");
+        return -1;
+    }
 
     l2cap_init();
     rfcomm_init();
@@ -447,10 +452,6 @@ int main(void) {
 
     hci_event_callback_registration.callback = &spp_client_packet_handler;
     hci_add_event_handler(&hci_event_callback_registration);
-
-    heartbeat.process = &heartbeat_handler;
-    btstack_run_loop_set_timer(&heartbeat, LED_FLASH_IDLE_MS);
-    btstack_run_loop_add_timer(&heartbeat);
 
     hci_power_control(HCI_POWER_ON);
     btstack_run_loop_execute();

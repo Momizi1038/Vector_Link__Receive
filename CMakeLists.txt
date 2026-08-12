@@ -41,6 +41,7 @@ pico_sdk_init()
 add_executable(Vector_Link_Receive
     client.cpp
     lib/E220Connect/e220.cpp
+    send_data.cpp
     )
 target_link_libraries(Vector_Link_Receive
     pico_stdlib
@@ -48,6 +49,7 @@ target_link_libraries(Vector_Link_Receive
     pico_btstack_cyw43
     pico_cyw43_arch_none
     hardware_adc
+    pico_multicore
     )
 target_include_directories(Vector_Link_Receive PRIVATE
     ${CMAKE_CURRENT_LIST_DIR}
