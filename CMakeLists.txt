@@ -28,7 +28,7 @@ set(PICO_BOARD pico2_w CACHE STRING "Board type")
 # Pull in Raspberry Pi Pico SDK (must be before project)
 include(pico_sdk_import.cmake)
 
-project(picow_ble_temp_reader C CXX ASM)
+project(Vector_Link_Receive C CXX ASM)
 
 # Initialise the Raspberry Pi Pico SDK
 pico_sdk_init()
@@ -38,25 +38,26 @@ pico_sdk_init()
 # Standalone example that connects to picow_ble_temp_sensor and reads the temperature
 # Flahes once quickly each second when it's running but not connected to another device
 # Flashes twice quickly each second when connected to another device and reading it's temperature
-add_executable(picow_ble_temp_reader
+add_executable(Vector_Link_Receive
     client.cpp
+    lib/E220Connect/e220.cpp
     )
-target_link_libraries(picow_ble_temp_reader
+target_link_libraries(Vector_Link_Receive
     pico_stdlib
     pico_btstack_classic
     pico_btstack_cyw43
     pico_cyw43_arch_none
     hardware_adc
     )
-target_include_directories(picow_ble_temp_reader PRIVATE
+target_include_directories(Vector_Link_Receive PRIVATE
     ${CMAKE_CURRENT_LIST_DIR}
     ${CMAKE_CURRENT_LIST_DIR}/.. # For our common btstack config
     )
-target_compile_definitions(picow_ble_temp_reader PRIVATE
+target_compile_definitions(Vector_Link_Receive PRIVATE
     RUNNING_AS_CLIENT=1
 )
 
-pico_enable_stdio_usb(picow_ble_temp_reader 1)
-pico_enable_stdio_uart(picow_ble_temp_reader 0)
+pico_enable_stdio_usb(Vector_Link_Receive 1)
+pico_enable_stdio_uart(Vector_Link_Receive 0)
 
-pico_add_extra_outputs(picow_ble_temp_reader)
+pico_add_extra_outputs(Vector_Link_Receive)
