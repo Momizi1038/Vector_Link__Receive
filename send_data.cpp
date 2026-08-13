@@ -51,3 +51,53 @@
  bool Lora1_read_Aux(void){
   return Lora_1.readAux();
  }
+
+ int Lora1_get_data(ds4_data* output,int timeout_ms){
+    ds4_data input;
+    int read_data[10];
+    int list_size = 10;
+
+    bool flag = Lora_1.getDataWithCobs(list_size,timeout_ms);
+
+    if(flag){
+        Lora_1.readDataWithCobs(read_data,list_size);
+        if(read_data[0] & (1<<0)){//非常停止信号のチェック
+            return 4;
+        }
+
+        if(!(read_data[0] & (1<<1))){//データがLEDの場合2を返す
+            int sumdata = 0;
+            for(int i = 0; i < 5; i++){
+                sumdata += read_data[i];
+            }
+            if((sumdata%255)+ 1 == read_data[5]){
+                return 2;
+            }else{
+                return false;
+            }
+        }
+
+        int sumdata = 0;
+        for(int i = 0; i < 9; i++){
+            sumdata += read_data[i];
+        }
+
+        if((sumdata % 255) + 1 == read_data[9]){
+            output->jyoutai = read_data[0];
+            output->L_x     = read_data[1];
+            output->L_y     = read_data[2];
+            output->R_x     = read_data[3];
+            output->R_y     = read_data[4];
+            output->L2      = read_data[5];
+            output->R2      = read_data[6];
+            output->key     = read_data[7];
+            output->boton   = read_data[8];
+            output->checsam = read_data[9]; 
+            return true;
+        }else{
+            return false;
+        }
+    }else{
+        return -1;
+    }
+ }

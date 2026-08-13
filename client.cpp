@@ -34,8 +34,8 @@
 #define INQUIRY_DURATION         5       // Inquiry時間 × 1.28秒
 #define TARGET_DEVICE_NAME      "PicoW Controller"
 
-//#define DEBUG_LOG_BT
-//#define DEBUG_LOG_LORA
+#define DEBUG_LOG_BT    1
+#define DEBUG_LOG_LORA  1
 
 // -------------------------------------------------------
 // ステートマシン
@@ -345,11 +345,7 @@ static void spp_client_packet_handler(uint8_t packet_type, uint16_t channel,
             ds4_data controller;
             memcpy(&controller, packet, sizeof(ds4_data));
 
-            // int sum = 
-            //     controller.jyoutai + controller.L_x + controller.L_y +
-            //     controller.R_x    + controller.R_y  + controller.L2  +
-            //     controller.R2     + controller.key  + controller.boton;
-            // bool valid = ((sum % 255) + 1 == controller.checsam);
+            
 
             critical_section_enter_blocking(&cs_bt_data);
             share_data = controller;
@@ -357,6 +353,12 @@ static void spp_client_packet_handler(uint8_t packet_type, uint16_t channel,
             critical_section_exit(&cs_bt_data);
 
             #if DEBUG_LOG_BT
+
+                int sum = 
+                    controller.jyoutai + controller.L_x + controller.L_y +
+                    controller.R_x    + controller.R_y  + controller.L2  +
+                    controller.R2     + controller.key  + controller.boton;
+                bool valid = ((sum % 255) + 1 == controller.checsam);
                 static uint32_t callback_count = 0;
                 static uint32_t byte_count = 0;
                 static absolute_time_t last_log;
@@ -397,6 +399,68 @@ static void spp_client_packet_handler(uint8_t packet_type, uint16_t channel,
 
 void core1_entry(){
     Lora1_init();
+    bool aux_state = true;
+    bool bt_get_state = false;
+    bool e220_get_state = false;
+    int e220_result = 0;
+    ds4_data bt_get_data,e220_get_data,send_data;
+
+
+    absolute_time_t t_now;
+    while(true){
+        t_now = get_absolute_time();
+
+        //Bluetooth受信処理
+        critical_section_enter_blocking(&cs_bt_data);
+        if(share_update){
+            bt_get_data = share_data;
+            share_update = false;
+            bt_get_state = true;
+        }else{
+            bt_get_state = false;
+        }
+        critical_section_exit(&cs_bt_data);
+
+        int sum = share_data.jyoutai + share_data.L_x + share_data.L_y +
+            share_data.R_x    + share_data.R_y  + share_data.L2  +
+            share_data.R2     + share_data.key  + share_data.boton;
+        bool valid_bt = ((sum % 255) + 1 == share_data.checsam);
+
+        #if DEBUG_LOG_BT
+            if(bt_get_state){
+                printf("[BTbr]Get:OK,Data:%d,%d,%d,%d,State:%d\n",
+                    share_data.L_x,share_data.R_x,share_data.L2,
+                    share_data.R2, share_data.jyoutai);
+            }
+
+        #endif
+
+        //e220 受信処理
+        if(!(Lora1_read_Aux())){
+            if(true){
+                printf("read LORA\n");
+                e220_result = Lora1_get_data(&e220_get_data,500);
+                if(e220_result == true){
+                    e220_get_state = true;
+                    #if DEBUG_LOG_LORA
+                        printf("[LoRa]Get:OK,Data:%d,%d,%d,%d,State:%d\n",
+                            e220_get_data.L_x,e220_get_data.R_x,e220_get_data.L2,
+                            e220_get_data.R2, e220_get_data.jyoutai);
+
+                    #endif
+                }else{
+                    e220_get_state = false;
+                    #if DEBUG_LOG_LOR
+                        printf("[LoRa]undefined err code:%d",e220_result);
+
+                    #endif
+                }
+            }
+            aux_state = true;
+        }else{
+            aux_state = false;
+        }
+    }
 }
 
 // -------------------------------------------------------
