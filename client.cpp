@@ -422,7 +422,8 @@ void core1_entry(){
 
         int sum = share_data.jyoutai + share_data.L_x + share_data.L_y +
             share_data.R_x    + share_data.R_y  + share_data.L2  +
-            share_data.R2     + share_data.key  + share_data.boton;
+            share_data.R2     + share_data.key  + share_data.boton +
+            share_data.seq_H  + share_data.seq_L;
         bool valid_bt = ((sum % 255) + 1 == share_data.checsam);
 
         #if DEBUG_LOG_BT

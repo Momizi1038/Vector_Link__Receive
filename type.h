@@ -24,6 +24,10 @@ typedef struct {
     //左から、L1,R1,L3,R3,Share,Option,PS,T-Pad_click
     uint8_t boton;//その他ボタン
 
+    //パケット識別番号H:上位８ビット,L:下位８ビット
+    uint8_t seq_H;
+    uint8_t seq_L;
+
     uint8_t checsam;
 }ds4_data;
 
