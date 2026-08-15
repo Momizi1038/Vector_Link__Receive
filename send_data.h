@@ -46,6 +46,8 @@ bool Lora1_send_ds4(ds4_data input, int CH);
 
 bool Lora1_read_Aux(void);
 
+bool Lara1_readable(void);
+
 int Lora1_get_data(ds4_data* output,int timeout_ms);
 
 #ifdef __cplusplus

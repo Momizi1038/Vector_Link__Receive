@@ -398,7 +398,6 @@ static void spp_client_packet_handler(uint8_t packet_type, uint16_t channel,
 }
 
 void core1_entry(){
-    Lora1_init();
     bool aux_state = true;
     bool bt_get_state = false;
     bool e220_get_state = false;
@@ -436,30 +435,25 @@ void core1_entry(){
         #endif
 
         //e220 受信処理
-        if(!(Lora1_read_Aux())){
-            if(true){
-                printf("read LORA\n");
-                e220_result = Lora1_get_data(&e220_get_data,500);
-                if(e220_result == true){
-                    e220_get_state = true;
-                    #if DEBUG_LOG_LORA
-                        printf("[LoRa]Get:OK,Data:%d,%d,%d,%d,State:%d\n",
-                            e220_get_data.L_x,e220_get_data.R_x,e220_get_data.L2,
-                            e220_get_data.R2, e220_get_data.jyoutai);
-
-                    #endif
-                }else{
-                    e220_get_state = false;
-                    #if DEBUG_LOG_LOR
-                        printf("[LoRa]undefined err code:%d",e220_result);
-
-                    #endif
-                }
+        if(Lara1_readable()){
+            e220_result = Lora1_get_data(&e220_get_data,500);
+            if(e220_result == true){
+                e220_get_state = true;
+                #if DEBUG_LOG_LORA
+                    printf("[LoRa]Get:OK,Data:%d,%d,%d,%d,State:%d\n",
+                        e220_get_data.L_x,e220_get_data.R_x,e220_get_data.L2,
+                        e220_get_data.R2, e220_get_data.jyoutai);
+                #endif
+            }else{
+                e220_get_state = false;
+                #if DEBUG_LOG_LOR
+                    printf("[LoRa]undefined err code:%d",e220_result);
+                #endif
             }
-            aux_state = true;
-        }else{
-            aux_state = false;
         }
+
+        //統合処理
+        
     }
 }
 
@@ -497,6 +491,8 @@ int main(void) {
     gpio_set_dir(BlueLED_D2,GPIO_OUT);
     gpio_set_dir(Yellow_D3,GPIO_OUT);
     gpio_put(Yellow_D3,true);
+    Lora1_init();
+    sleep_ms(500);
 
     critical_section_init(&cs_bt_data);
     multicore_launch_core1(core1_entry);

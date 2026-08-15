@@ -52,6 +52,12 @@
   return Lora_1.readAux();
  }
 
+ bool Lara1_readable(void){
+    return Lora_1.serialReadAvailable();
+    //0:受信していない
+    //1:受信している
+ }
+
  int Lora1_get_data(ds4_data* output,int timeout_ms){
     ds4_data input;
     int read_data[10];

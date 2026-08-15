@@ -316,7 +316,7 @@ bool E220::getDataWithCobs(const int _size,const uint32_t _timeout){
   }
   // get_size = _size + 2;
   if(_count != _size + 2){
-    printf("DetaSize:%d\n", _count);
+    //printf("DetaSize:%d\n", _count);
     return false;
   }
   get_size = _count;
