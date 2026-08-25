@@ -25,6 +25,7 @@
 
 #include "type.h"
 #include "send_data.h"
+#include "uart_output.h"
 
 // -------------------------------------------------------
 // 設定
@@ -37,6 +38,11 @@
 #define DEBUG_LOG_BT    1
 #define DEBUG_LOG_LORA  1
 
+// 外部マイコン出力用UART
+#define EXTERNAL_UART_ID uart0
+#define EXTERNAL_UART_TX_PIN 0
+#define EXTERNAL_UART_RX_PIN 1
+#define EXTERNAL_UART_BAUD_RATE 115200
 // -------------------------------------------------------
 // ステートマシン
 // -------------------------------------------------------
@@ -462,16 +468,19 @@ void core1_entry(){
             uint16_t e220_seq = (e220_get_data.seq_H << 8) | e220_get_data.seq_L;
 
             if(bt_seq >= e220_seq){
-
+                output_uart.send(bt_get_data);
+                printf("[OUT]seq:%d",bt_seq);
             }else if(e220_get_state){
-
+                output_uart.send(e220_get_data);
+                printf("[OUT]seq:%d",e220_seq);
             }
         }else if(e220_get_state){
             uint16_t bt_seq   = (  bt_get_data.seq_H << 8) |   bt_get_data.seq_L;
             uint16_t e220_seq = (e220_get_data.seq_H << 8) | e220_get_data.seq_L;
 
             if(bt_seq <= e220_seq){
-                
+                output_uart.send(e220_get_data);
+                printf("[OUT]seq:%d",e220_seq);
             }
         }
 
@@ -514,6 +523,9 @@ int main(void) {
     gpio_put(Yellow_D3,true);
     Lora1_init();
     sleep_ms(500);
+
+    UartOutput output_uart(EXTERNAL_UART_ID, EXTERNAL_UART_TX_PIN, EXTERNAL_UART_RX_PIN, EXTERNAL_UART_BAUD_RATE);
+    output_uart.begin();
 
     critical_section_init(&cs_bt_data);
     multicore_launch_core1(core1_entry);

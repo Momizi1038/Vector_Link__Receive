@@ -42,6 +42,7 @@ add_executable(Vector_Link_Receive
     client.cpp
     lib/E220Connect/e220.cpp
     send_data.cpp
+    uart_output.cpp
     )
 target_link_libraries(Vector_Link_Receive
     pico_stdlib
