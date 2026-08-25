@@ -14,7 +14,9 @@
   output[6] = int(rewdata.R2);
   output[7] = int(rewdata.key);
   output[8] = int(rewdata.boton);
-  output[9] = int(rewdata.checsam);
+  output[9] = int(rewdata.seq_H);
+  output[10]= int(rewdata.seq_L);
+  output[11]= int(rewdata.checsam);
   return true;
  }
 
@@ -38,11 +40,11 @@
  }
 
  bool Lora1_send_ds4(ds4_data input , int CH){
-  int deta_len[10];
+  int deta_len[12];
   bool check = false;
 
   changeData(deta_len,input);
-  Lora_1.setDataWithCobs(deta_len,10);
+  Lora_1.setDataWithCobs(deta_len,12);
   check = Lora_1.sendDataFixed(TARGET_ADDH, TARGET_ADDL, CH,100);
 
   return check;

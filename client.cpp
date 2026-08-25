@@ -402,6 +402,7 @@ void core1_entry(){
     bool bt_get_state = false;
     bool e220_get_state = false;
     int e220_result = 0;
+    bool get_new_data = false;
     ds4_data bt_get_data,e220_get_data,send_data;
 
 
@@ -420,17 +421,17 @@ void core1_entry(){
         }
         critical_section_exit(&cs_bt_data);
 
-        int sum = share_data.jyoutai + share_data.L_x + share_data.L_y +
-            share_data.R_x    + share_data.R_y  + share_data.L2  +
-            share_data.R2     + share_data.key  + share_data.boton +
-            share_data.seq_H  + share_data.seq_L;
-        bool valid_bt = ((sum % 255) + 1 == share_data.checsam);
+        int sum = bt_get_data.jyoutai + bt_get_data.L_x + bt_get_data.L_y +
+            bt_get_data.R_x    + bt_get_data.R_y  + bt_get_data.L2  +
+            bt_get_data.R2     + bt_get_data.key  + bt_get_data.boton +
+            bt_get_data.seq_H  + bt_get_data.seq_L;
+        bool valid_bt = ((sum % 255) + 1 == bt_get_data.checsam);
 
         #if DEBUG_LOG_BT
             if(bt_get_state){
                 printf("[BTbr]Get:OK,Data:%d,%d,%d,%d,State:%d\n",
-                    share_data.L_x,share_data.R_x,share_data.L2,
-                    share_data.R2, share_data.jyoutai);
+                    bt_get_data.L_x,bt_get_data.R_x,bt_get_data.L2,
+                    bt_get_data.R2, bt_get_data.jyoutai);
             }
 
         #endif
@@ -451,10 +452,29 @@ void core1_entry(){
                     printf("[LoRa]undefined err code:%d",e220_result);
                 #endif
             }
+        }else{
+            e220_get_state = false;
         }
 
         //統合処理
-        
+        if(bt_get_state){
+            uint16_t bt_seq   = (  bt_get_data.seq_H << 8) |   bt_get_data.seq_L;
+            uint16_t e220_seq = (e220_get_data.seq_H << 8) | e220_get_data.seq_L;
+
+            if(bt_seq >= e220_seq){
+
+            }else if(e220_get_state){
+
+            }
+        }else if(e220_get_state){
+            uint16_t bt_seq   = (  bt_get_data.seq_H << 8) |   bt_get_data.seq_L;
+            uint16_t e220_seq = (e220_get_data.seq_H << 8) | e220_get_data.seq_L;
+
+            if(bt_seq <= e220_seq){
+                
+            }
+        }
+
     }
 }
 
