@@ -474,6 +474,8 @@ void core1_entry(){
             }else if(e220_get_state){
                 output_uart.send(e220_get_data);
                 printf("[OUT]seq:%d",e220_seq);
+            }else{
+                printf("Err NotSend UART");
             }
         }else if(e220_get_state){
             uint16_t bt_seq   = (  bt_get_data.seq_H << 8) |   bt_get_data.seq_L;
