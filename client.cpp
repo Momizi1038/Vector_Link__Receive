@@ -43,6 +43,7 @@
 #define EXTERNAL_UART_TX_PIN 0
 #define EXTERNAL_UART_RX_PIN 1
 #define EXTERNAL_UART_BAUD_RATE 115200
+UartOutput output_uart(EXTERNAL_UART_ID, EXTERNAL_UART_TX_PIN, EXTERNAL_UART_RX_PIN, EXTERNAL_UART_BAUD_RATE);
 // -------------------------------------------------------
 // ステートマシン
 // -------------------------------------------------------
@@ -524,7 +525,6 @@ int main(void) {
     Lora1_init();
     sleep_ms(500);
 
-    UartOutput output_uart(EXTERNAL_UART_ID, EXTERNAL_UART_TX_PIN, EXTERNAL_UART_RX_PIN, EXTERNAL_UART_BAUD_RATE);
     output_uart.begin();
 
     critical_section_init(&cs_bt_data);
