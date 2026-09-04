@@ -1,60 +1,278 @@
 #include "uart_output.h"
 
-#include "hardware/gpio.h"
 #include "pico/stdlib.h"
+#include "hardware/uart.h"
 
+
+// ============================================================
+// UARTデータサイズ
+//
+// 0   jyoutai
+// 1   L_x
+// 2   L_y
+// 3   R_x
+// 4   R_y
+// 5   L2
+// 6   R2
+// 7   key
+// 8   boton
+// 9   seq_H
+// 10  seq_L
+// 11  CRC-8
+//
+// ============================================================
+
+#define UART_DATA_SIZE 12
+
+// COBSエンコード後の最大サイズ
+// データ12 byte + COBSコード + 終端0
+#define UART_COBS_SIZE (UART_DATA_SIZE + 2)
+
+
+// ============================================================
+// コンストラクタ
+// ============================================================
 
 UartOutput::UartOutput(
-    uart_inst_t* uart,
+    uart_inst_t* uart_id,
     uint tx_pin,
     uint rx_pin,
-    uint32_t baudrate
+    uint32_t baud_rate
 )
-    : uart_(uart),
-      tx_pin_(tx_pin),
-      rx_pin_(rx_pin),
-      baudrate_(baudrate)
 {
+    _uart_id = uart_id;
+    _tx_pin = tx_pin;
+    _rx_pin = rx_pin;
+    _baud_rate = baud_rate;
+
+    _last_send_seq = 0;
+    _last_send_seq_valid = false;
 }
 
+
+// ============================================================
+// UART初期化
+// ============================================================
 
 void UartOutput::begin()
 {
-    uart_init(uart_, baudrate_);
-
-    gpio_set_function(tx_pin_, GPIO_FUNC_UART);
-    gpio_set_function(rx_pin_, GPIO_FUNC_UART);
-
-    uart_set_format(
-        uart_,
-        8,      // Data bits
-        1,      // Stop bits
-        UART_PARITY_NONE
+    uart_init(
+        _uart_id,
+        _baud_rate
     );
 
-    uart_set_fifo_enabled(uart_, true);
+    gpio_set_function(
+        _tx_pin,
+        GPIO_FUNC_UART
+    );
+
+    gpio_set_function(
+        _rx_pin,
+        GPIO_FUNC_UART
+    );
+
+    _last_send_seq = 0;
+    _last_send_seq_valid = false;
 }
 
 
+// ============================================================
+// SEQ取得
+//
+// seq_H = 上位8 bit
+// seq_L = 下位8 bit
+// ============================================================
+
+uint16_t UartOutput::getSeq(
+    const ds4_data& data
+)
+{
+    return
+        ((uint16_t)data.seq_H << 8)
+        | data.seq_L;
+}
+
+
+// ============================================================
+// SEQ新旧判定
+//
+// 16bit SEQのオーバーフローを考慮
+//
+// 65535 → 0
+// も新しいデータとして扱う。
+//
+// ============================================================
+
+bool UartOutput::isSeqNewer(
+    uint16_t new_seq,
+    uint16_t old_seq
+)
+{
+    return
+        (int16_t)(new_seq - old_seq) > 0;
+}
+
+
+// ============================================================
+// 最新SEQのデータだけ送信
+//
+// BLEとE220のSEQを直接比較しない。
+//
+// 「最後にUARTへ送信したSEQ」を基準にする。
+//
+// ============================================================
+
+bool UartOutput::sendLatest(
+    const ds4_data& data
+)
+{
+    uint16_t seq = getSeq(data);
+
+
+    // --------------------------------------------------------
+    // 初回送信
+    // --------------------------------------------------------
+
+    if (!_last_send_seq_valid) {
+
+        if (send(data)) {
+
+            _last_send_seq = seq;
+            _last_send_seq_valid = true;
+
+            return true;
+        }
+
+        return false;
+    }
+
+
+    // --------------------------------------------------------
+    // 新しいSEQなら送信
+    // --------------------------------------------------------
+
+    if (isSeqNewer(
+        seq,
+        _last_send_seq
+    )) {
+
+        if (send(data)) {
+
+            // UART送信後にSEQを更新
+            _last_send_seq = seq;
+
+            return true;
+        }
+
+        return false;
+    }
+
+
+    // --------------------------------------------------------
+    // 古いSEQ
+    // --------------------------------------------------------
+
+    return false;
+}
+
+
+// ============================================================
+// ds4_data → UART用12 byte
+//
+// [0]  jyoutai
+// [1]  L_x
+// [2]  L_y
+// [3]  R_x
+// [4]  R_y
+// [5]  L2
+// [6]  R2
+// [7]  key
+// [8]  boton
+// [9]  seq_H
+// [10] seq_L
+// [11] CRC-8
+//
+// ============================================================
+
+bool UartOutput::changeData(
+    uint8_t* output,
+    const ds4_data& data
+)
+{
+    output[0] = data.jyoutai;
+
+    output[1] = data.L_x;
+    output[2] = data.L_y;
+
+    output[3] = data.R_x;
+    output[4] = data.R_y;
+
+    output[5] = data.L2;
+    output[6] = data.R2;
+
+    output[7] = data.key;
+    output[8] = data.boton;
+
+
+    // --------------------------------------------------------
+    // SEQ
+    //
+    // Pico間通信と同じ
+    //
+    // Byte 9  = seq_H
+    // Byte 10 = seq_L
+    // --------------------------------------------------------
+
+    output[9]  = data.seq_H;
+    output[10] = data.seq_L;
+
+
+    // --------------------------------------------------------
+    // CRC-8
+    //
+    // Byte 0～10を対象に計算
+    // --------------------------------------------------------
+
+    output[11] = calcCRC8(
+        output,
+        11
+    );
+
+    return true;
+}
+
+
+// ============================================================
 // CRC-8
+//
 // Polynomial : 0x07
 // Initial    : 0x00
-uint8_t UartOutput::crc8(
+// RefIn      : false
+// RefOut     : false
+// XorOut     : 0x00
+//
+// ============================================================
+
+uint8_t UartOutput::calcCRC8(
     const uint8_t* data,
-    size_t length
+    uint8_t size
 )
 {
     uint8_t crc = 0x00;
 
-    for (size_t i = 0; i < length; i++) {
+    for (uint8_t i = 0; i < size; i++) {
 
         crc ^= data[i];
 
         for (uint8_t bit = 0; bit < 8; bit++) {
 
             if (crc & 0x80) {
-                crc = (uint8_t)((crc << 1) ^ 0x07);
+
+                crc =
+                    (uint8_t)((crc << 1) ^ 0x07);
+
             } else {
+
                 crc <<= 1;
             }
         }
@@ -64,135 +282,120 @@ uint8_t UartOutput::crc8(
 }
 
 
-// 戻り値：エンコード後のサイズ
-// 失敗時：0
-size_t UartOutput::cobsEncode(
+// ============================================================
+// COBS
+//
+// これまで使用しているCOBS方式を維持
+// ============================================================
+
+uint8_t UartOutput::cobsEncode(
     const uint8_t* input,
-    size_t input_length,
-    uint8_t* output,
-    size_t output_size
+    uint8_t input_size,
+    uint8_t* output
 )
 {
-    // COBSでは最悪の場合、
-    // input_length + input_length / 254 + 1
-    // 程度必要
+    uint8_t s[UART_COBS_SIZE] = {0};
 
-    if (output_size < input_length + 2) {
-        return 0;
+
+    // --------------------------------------------------------
+    // 元データを1 byte後ろへ配置
+    // --------------------------------------------------------
+
+    for (
+        uint8_t i = 0;
+        i < input_size;
+        i++
+    ) {
+
+        s[i + 1] = input[i];
     }
 
-    size_t read_index = 0;
-    size_t write_index = 1;
-    size_t code_index = 0;
 
-    uint8_t code = 1;
+    // --------------------------------------------------------
+    // COBS処理
+    // --------------------------------------------------------
 
-    while (read_index < input_length) {
+    int i2 = 0;
 
-        if (input[read_index] == 0) {
+    for (
+        int i = input_size;
+        i >= 0;
+        i--
+    ) {
 
-            output[code_index] = code;
+        i2++;
 
-            code = 1;
-            code_index = write_index;
+        if (s[i] == 0) {
 
-            write_index++;
-
-            read_index++;
-
-        } else {
-
-            output[write_index] = input[read_index];
-
-            write_index++;
-            read_index++;
-
-            code++;
-
-            if (code == 0xFF) {
-
-                output[code_index] = code;
-
-                code = 1;
-                code_index = write_index;
-
-                write_index++;
-            }
-        }
-
-        if (write_index >= output_size) {
-            return 0;
+            s[i] = i2;
+            i2 = 0;
         }
     }
 
-    output[code_index] = code;
 
-    return write_index;
+    // --------------------------------------------------------
+    // 出力
+    // --------------------------------------------------------
+
+    for (
+        uint8_t i = 0;
+        i < input_size + 2;
+        i++
+    ) {
+
+        output[i] = s[i];
+    }
+
+
+    return input_size + 2;
 }
 
 
+// ============================================================
+// UART送信
+//
+// ds4_data
+//     ↓
+// 12 byte生成
+//     ↓
+// CRC-8
+//     ↓
+// COBS
+//     ↓
+// UART
+//
+// ============================================================
+
 bool UartOutput::send(const ds4_data& data)
 {
-    // COBSエンコード前
-    //
-    // Byte 0  : jyoutai
-    // Byte 1  : L_x
-    // Byte 2  : L_y
-    // Byte 3  : R_x
-    // Byte 4  : R_y
-    // Byte 5  : L2
-    // Byte 6  : R2
-    // Byte 7  : key
-    // Byte 8  : boton
-    // Byte 9  : seq_L
-    // Byte 10 : seq_H
-    // Byte 11 : CRC-8
+    uint8_t raw_data[UART_DATA_SIZE] = {0};
 
-    uint8_t packet[12];
-
-    packet[0]  = data.jyoutai;
-
-    packet[1]  = data.L_x;
-    packet[2]  = data.L_y;
-    packet[3]  = data.R_x;
-    packet[4]  = data.R_y;
-
-    packet[5]  = data.L2;
-    packet[6]  = data.R2;
-
-    packet[7]  = data.key;
-    packet[8]  = data.boton;
-
-    packet[9]  = data.seq_L;
-    packet[10] = data.seq_H;
-
-    // Byte 0～10の11 byteからCRCを計算
-    packet[11] = crc8(packet, 11);
+    uint8_t cobs_data[UART_COBS_SIZE] = {0};
 
 
-    // 12 byteのCOBS最大サイズは14 byteあれば十分
-    uint8_t encoded[14];
+    // --------------------------------------------------------
+    // 12 byteデータ生成
+    // --------------------------------------------------------
 
-    size_t encoded_size = cobsEncode(
-        packet,
-        sizeof(packet),
-        encoded,
-        sizeof(encoded)
-    );
+    if (!changeData(
+        raw_data,
+        data
+    )) {
 
-    if (encoded_size == 0) {
         return false;
     }
 
+    // --------------------------------------------------------
+    // COBS
+    // --------------------------------------------------------
+    uint8_t send_size =cobsEncode(raw_data, UART_DATA_SIZE, cobs_data);
 
+    // --------------------------------------------------------
     // UART送信
-    uart_write_blocking(uart_, encoded, encoded_size);
-
-
-    // COBSパケット終端
-    const uint8_t delimiter = 0x00;
-
-    uart_write_blocking(uart_, &delimiter, 1);
+    // --------------------------------------------------------
+    for (uint8_t i = 0; i < send_size; i++) {
+        uart_putc_raw( _uart_id,cobs_data[i]);
+    }
 
     return true;
 }

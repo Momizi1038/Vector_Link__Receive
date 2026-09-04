@@ -465,26 +465,11 @@ void core1_entry(){
 
         //統合処理
         if(bt_get_state){
-            uint16_t bt_seq   = (  bt_get_data.seq_H << 8) |   bt_get_data.seq_L;
-            uint16_t e220_seq = (e220_get_data.seq_H << 8) | e220_get_data.seq_L;
-
-            if(bt_seq >= e220_seq){
-                output_uart.send(bt_get_data);
-                printf("[OUT]seq:%d",bt_seq);
-            }else if(e220_get_state){
-                output_uart.send(e220_get_data);
-                printf("[OUT]seq:%d",e220_seq);
-            }else{
-                printf("Err NotSend UART");
-            }
-        }else if(e220_get_state){
-            uint16_t bt_seq   = (  bt_get_data.seq_H << 8) |   bt_get_data.seq_L;
-            uint16_t e220_seq = (e220_get_data.seq_H << 8) | e220_get_data.seq_L;
-
-            if(bt_seq <= e220_seq){
-                output_uart.send(e220_get_data);
-                printf("[OUT]seq:%d",e220_seq);
-            }
+          output_uart.sendLatest(bt_get_data);
+        }
+        
+        if(e220_get_state){
+            output_uart.sendLatest(e220_get_data);
         }
 
     }

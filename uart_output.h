@@ -2,44 +2,83 @@
 #define UART_OUTPUT_H
 
 #include <stdint.h>
-#include <stddef.h>
-
 #include "hardware/uart.h"
+
 #include "type.h"
+
 
 class UartOutput {
 public:
+
     UartOutput(
-        uart_inst_t* uart,
+        uart_inst_t* uart_id,
         uint tx_pin,
         uint rx_pin,
-        uint32_t baudrate
+        uint32_t baud_rate
     );
 
     void begin();
 
-    // ds4_dataをUARTプロトコルへ変換して送信
+    // 新しいSEQのデータだけ送信
+    bool sendLatest(const ds4_data& data);
+
+    // 実際のデータ送信
     bool send(const ds4_data& data);
 
-private:
-    // CRC-8
-    // Polynomial: 0x07
-    // Initial:    0x00
-    uint8_t crc8(const uint8_t* data, size_t length);
 
-    // COBSエンコード
-    size_t cobsEncode(
-        const uint8_t* input,
-        size_t input_length,
-        uint8_t* output,
-        size_t output_size
+private:
+
+    // ========================================================
+    // UART設定
+    // ========================================================
+    uart_inst_t* _uart_id;
+    uint _tx_pin;
+    uint _rx_pin;
+    uint32_t _baud_rate;
+
+    // ========================================================
+    // 最後にUARTへ送信したSEQ
+    // ========================================================
+    uint16_t _last_send_seq;
+    bool _last_send_seq_valid;
+
+    // ========================================================
+    // SEQ
+    // ========================================================
+    uint16_t getSeq(
+        const ds4_data& data
     );
 
-private:
-    uart_inst_t* uart_;
-    uint tx_pin_;
-    uint rx_pin_;
-    uint32_t baudrate_;
+    bool isSeqNewer(
+        uint16_t new_seq,
+        uint16_t old_seq
+    );
+
+    // ========================================================
+    // データ生成
+    // ========================================================
+    bool changeData(
+        uint8_t* output,
+        const ds4_data& data
+    );
+
+    // ========================================================
+    // CRC-8
+    // ========================================================
+    uint8_t calcCRC8(
+        const uint8_t* data,
+        uint8_t size
+    );
+
+    // ========================================================
+    // COBS
+    // ========================================================
+    uint8_t cobsEncode(
+        const uint8_t* input,
+        uint8_t input_size,
+        uint8_t* output
+    );
 };
+
 
 #endif
