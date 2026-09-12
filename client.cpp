@@ -36,7 +36,7 @@
 #define TARGET_DEVICE_NAME      "PicoW Controller"
 
 #define DEBUG_LOG_BT    1
-#define DEBUG_LOG_LORA  1
+#define DEBUG_LOG_LORA  0
 
 // 外部マイコン出力用UART
 #define EXTERNAL_UART_ID uart0
@@ -66,6 +66,9 @@ static bool       server_found = false;
 static uint8_t    rfcomm_channel = 0;   // SDPで取得するチャンネル番号
 static uint16_t   rfcomm_cid    = 0;
 
+// Bluetooth Classic ACL Connection Handle
+static hci_con_handle_t connection_handle = HCI_CON_HANDLE_INVALID;
+
 static int        rssi_server  = 0;
 static int        rssi_counter = 0;
 #define RSSI_SAMPLE_INTERVAL 30
@@ -91,9 +94,12 @@ static void client_start_sdp_query(void);
 // -------------------------------------------------------
 static void client_start_inquiry(void) {
     printf("[INQ] Starting Inquiry...\n");
-    state        = TC_W4_INQUIRY_RESULT;
-    server_found = false;
-    rfcomm_channel = 0;
+    state              = TC_W4_INQUIRY_RESULT;
+    server_found       = false;
+    rfcomm_channel     = 0;
+    rfcomm_cid         = 0;
+    connection_handle  = HCI_CON_HANDLE_INVALID;
+
     memset(server_addr, 0, sizeof(server_addr));
     gap_inquiry_start(INQUIRY_DURATION);
 }
@@ -204,28 +210,24 @@ static void spp_client_packet_handler(uint8_t packet_type, uint16_t channel,
                 // --- HCI ACL 接続完了 → SDP Query 開始 ---
                 case HCI_EVENT_CONNECTION_COMPLETE: {
                     uint8_t status = hci_event_connection_complete_get_status(packet);
+
                     if (status != ERROR_CODE_SUCCESS) {
                         printf("[HCI] ACL Connection failed: 0x%02x\n", status);
+                        connection_handle = HCI_CON_HANDLE_INVALID;
+
                         client_start_inquiry();
                         break;
                     }
+
                     hci_event_connection_complete_get_bd_addr(packet, event_addr);
+
+                     // ACL Connection Handleを取得
+                    connection_handle = hci_event_connection_complete_get_connection_handle(packet);
+
                     printf("[HCI] ===== ACL Connection established to %s =====\n",
-                           bd_addr_to_str(event_addr));
-                    
-                    // // [重要] ACL 接続成功後に SDP Query を実行
-                    // printf("[SDP] Starting SDP query for channel discovery...\n");
-                    // state = TC_W4_SDP_RESULT;
-                    
-                    // int sdp_err = sdp_client_query_rfcomm_channel_and_name_for_uuid(
-                    //     &spp_client_packet_handler,
-                    //     server_addr,
-                    //     BLUETOOTH_SERVICE_CLASS_SERIAL_PORT
-                    // );
-                    // if (sdp_err != 0) {
-                    //     printf("[SDP] ERROR: SDP query failed: %d\n", sdp_err);
-                    //     client_start_inquiry();
-                    // }
+                        bd_addr_to_str(event_addr));
+
+                    printf("[HCI] connection_handle = 0x%04x\n", connection_handle);
                     break;
                 }
 
@@ -237,6 +239,29 @@ static void spp_client_packet_handler(uint8_t packet_type, uint16_t channel,
                     const char *name = sdp_event_query_rfcomm_service_get_name(packet);
                     printf("[SDP] Found service: \"%s\" channel=%d\n", name, ch);
                     rfcomm_channel = ch;
+                    break;
+                }
+
+                case HCI_EVENT_MODE_CHANGE: {
+
+                    uint8_t status = hci_event_mode_change_get_status(packet);
+                    hci_con_handle_t handle = hci_event_mode_change_get_handle(packet);
+                    uint8_t mode = hci_event_mode_change_get_mode(packet);
+                    uint16_t interval = hci_event_mode_change_get_interval(packet);
+
+                    printf("[SNIFF] MODE_CHANGE: status=0x%02x handle=0x%04x mode=%u interval=%u (%.3f ms)\n",
+                        status, handle, mode, interval, interval * 0.625f);
+
+                    if(status != ERROR_CODE_SUCCESS){
+                        printf("[SNIFF] Mode change failed\n");
+                    }else if(mode == ACL_CONNECTION_MODE_SNIFF){
+                        printf("[SNIFF] ===== Sniff Mode ACTIVE =====\n");
+                    }else if(mode == ACL_CONNECTION_MODE_ACTIVE){
+                        printf("[SNIFF] ===== Active Mode =====\n");
+                    }else{
+                        printf("[SNIFF] Unknown connection mode: %u\n", mode);
+                    }
+
                     break;
                 }
 
@@ -299,8 +324,23 @@ static void spp_client_packet_handler(uint8_t packet_type, uint16_t channel,
                     rfcomm_cid = rfcomm_event_channel_opened_get_rfcomm_cid(packet);
                     state = TC_W4_READY;
                     printf("[SPP] ===== Connected! cid=0x%04x mtu=%d =====\n",
-                           rfcomm_cid,
-                           rfcomm_event_channel_opened_get_max_frame_size(packet));
+                           rfcomm_cid, rfcomm_event_channel_opened_get_max_frame_size(packet));
+
+                    // ---------------------------------------------------
+                    // Sniff Mode開始
+                    // ---------------------------------------------------
+                    if (connection_handle != HCI_CON_HANDLE_INVALID) {
+
+                        printf("[SNIFF] Requesting Sniff Mode...\n");
+
+                        uint8_t sniff_status = gap_sniff_mode_enter(connection_handle, 
+                            16,            16,              4, 1 );
+                      // minimum interval maximum interval
+                        printf("[SNIFF] enter request status = 0x%02x\n", sniff_status);
+                    }else{
+                        printf("[SNIFF] ERROR: invalid connection handle\n");
+                    }
+
                     break;
                 }
 
@@ -309,6 +349,8 @@ static void spp_client_packet_handler(uint8_t packet_type, uint16_t channel,
                     printf("[HCI] Disconnection complete\n");
                     rfcomm_cid = 0;
                     rfcomm_channel = 0;
+                    connection_handle = HCI_CON_HANDLE_INVALID;
+
                     client_start_inquiry();
                     //if (state != TC_OFF) client_start_inquiry();
                     break;
@@ -526,7 +568,9 @@ int main(void) {
     rfcomm_init();
     sdp_client_init();
 
+    //bluetooth 設定
     hci_set_inquiry_mode(INQUIRY_MODE_RSSI_AND_EIR);
+    gap_set_default_link_policy_settings(LM_LINK_POLICY_ENABLE_SNIFF_MODE); // Bluetooth Classic Sniff Modeを許可
     gap_ssp_set_authentication_requirement(SSP_IO_AUTHREQ_MITM_PROTECTION_NOT_REQUIRED_NO_BONDING);
     gap_ssp_set_io_capability(SSP_IO_CAPABILITY_NO_INPUT_NO_OUTPUT);
 
